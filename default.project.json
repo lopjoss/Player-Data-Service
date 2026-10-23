@@ -1,6 +1,6 @@
 {
   "name": "player-data-service",
   "tree": {
-    "$path": "src"
+    "$path": "src/playerDataService"
   }
 }

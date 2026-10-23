@@ -5,7 +5,7 @@
 
     "ReplicatedStorage": {
       "PlayerDataService": {
-        "$path": "src"
+        "$path": "src/playerDataService"
       }
     },
 
