@@ -1,17 +1,37 @@
 local number = require("@self/fields/number")
+local table = require("@self/fields/table")
 
+type tableClassType<T, U, V> = table.classType<T, U, V>
 type numberClassType = number.classType
 
-type function process<T>(write : type) : type
+type function transform(write : type) : type
 	assert(write:is("table"), "expected a table type")
+
+    write = types.copy(write)
+
+    local function getTransformed(type : type) : type
+        if type:is("number") then
+            return numberClassType
+        elseif type:is("table") then
+            local indexer = type:readindexer()
+
+            if indexer then
+                return tableClassType(
+                    indexer.index,
+                    getTransformed(indexer.result),
+                    indexer.result
+                )
+            else
+                return transform(type)
+            end
+        else
+            error(`unsupported type {type}`)
+        end
+    end
 
 	for key, value in write:properties() do
 		if value.read then
-			if value.read:is("number") then
-				write:setproperty(key, numberClassType)
-            elseif value.read:is("table") then
-                write:setproperty(key, process(value.read))
-			end
+			write:setproperty(key, getTransformed(value.read))
 		end
 	end
 
@@ -20,24 +40,36 @@ end
 
 local module = {}
 
-local function process<T>(input : T & {[any] : any}) : process<T>
+local function transformRuntime<T>(input : T) : transform<T>
+    assert(type(input) == "table", "expected a table type")
+
+    local input : {[any] : any} = input
     local result : {[any] : any} = {}
 
-    for key, value in pairs(input) do
+    local function getTransformed(value : any) : any
         if type(value) == "number" then
-            result[key] = number.new(value)
+            return number.new(value)
         elseif type(value) == "table" then
-            result[key] = process(value :: T)
+            return table.new<<any, any, {[any] : any}>>(
+                transformRuntime(value),
+                getTransformed
+            )
+        else
+            error(`unsupported type {typeof(value)}`)
         end
     end
 
-    return result :: process<T>
+    for key, value in pairs(input) do
+        result[key] = getTransformed(value)
+    end
+
+    return result :: transform<T>
 end
 
-module.process = function<T>(write : T) : process<T>
-    assert(type(write) == "table", "Expected a table")
+module.transform = function<T>(input: T) : transform<T>
+    assert(type(input) == "table", "expected a table")
 
-    return process(write)
+    return transformRuntime(input)
 end
 
 return module
