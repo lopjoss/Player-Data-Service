@@ -1,6 +1,8 @@
 local number = require("@self/fields/number")
+local string = require("@self/fields/string")
 local table = require("@self/fields/table")
 
+type stringClassType = string.classType
 type tableClassType<T, U, V> = table.classType<T, U, V>
 type numberClassType = number.classType
 
@@ -12,6 +14,8 @@ type function transform(write : type) : type
     local function getTransformed(type : type) : type
         if type:is("number") then
             return numberClassType
+        elseif type:is("string") then
+            return stringClassType
         elseif type:is("table") then
             local indexer = type:readindexer()
 
@@ -49,6 +53,8 @@ local function transformRuntime<T>(input : T) : transform<T>
     local function getTransformed(value : any) : any
         if type(value) == "number" then
             return number.new(value)
+        elseif type(value) == "string" then
+            return string.new(value)
         elseif type(value) == "table" then
             return table.new<<any, any, {[any] : any}>>(
                 transformRuntime(value),
