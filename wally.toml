@@ -1,0 +1,9 @@
+[package]
+name = "lopjoss/player-data-service"
+version = "1.0.0"
+license = "MIT"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+
+[server-dependencies]
+ProfileStore = "lm-loleris/profilestore@1.0.3"
