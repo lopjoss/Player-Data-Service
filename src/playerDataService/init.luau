@@ -1,10 +1,59 @@
+--[[
+    TODO
+    update ancestor tables on generic value change
+    fix type solver limit being hit
+    transform table to respective handler on table handler API insertion
+]]
+
 local number = require("@self/fields/number")
 local string = require("@self/fields/string")
-local table = require("@self/fields/table")
+local array = require("@self/fields/array")
+local dict = require("@self/fields/dict")
 
 type stringClassType = string.classType
-type tableClassType<T, U, V> = table.classType<T, U, V>
+type dictClassType<T, U, V> = dict.classType<T, U, V>
+type arrayClassType<T, U> = array.classType<T, U>
 type numberClassType = number.classType
+
+type arrayMT = {__index : {type : "array"}}
+type dictMT = {__index : {type : "dict"}}
+type arrayType<T> = setmetatable<T, arrayMT>
+type dictType<T> = setmetatable<T, dictMT>
+
+export type function transformSchema(schema : type) : type
+    assert(schema:is("table"), "expected a table type")
+
+    local function getTransformed(type : type) : type
+        local indexer = type:readindexer()
+
+        if indexer then
+            if indexer.result:is("table") then
+                type:setindexer(
+                    indexer.index,
+                    getTransformed(indexer.result)
+                )
+            end
+
+            if indexer.index:is("number") then
+                return arrayType(type)
+            else
+                return dictType(type)
+            end
+        else
+            return transformSchema(type)
+        end
+    end
+
+	for key, value in schema:properties() do
+		if value.read then
+			if value.read:is("table") then
+                schema:setproperty(key, getTransformed(value.read))
+            end
+		end
+	end
+
+    return schema
+end
 
 type function transform(write : type) : type
 	assert(write:is("table"), "expected a table type")
@@ -20,11 +69,18 @@ type function transform(write : type) : type
             local indexer = type:readindexer()
 
             if indexer then
-                return tableClassType(
-                    indexer.index,
-                    getTransformed(indexer.result),
-                    indexer.result
-                )
+                if indexer.index:is("number") then
+                    return arrayClassType(
+                        getTransformed(indexer.result),
+                        indexer.result
+                    )
+                else
+                    return dictClassType(
+                        indexer.index,
+                        getTransformed(indexer.result),
+                        indexer.result
+                    )
+                end
             else
                 return transform(type)
             end
@@ -50,31 +106,50 @@ local function transformRuntime<T>(input : T) : transform<T>
     local input : {[any] : any} = input
     local result : {[any] : any} = {}
 
-    local function getTransformed(value : any) : any
+    local function getTransformed(value : any) : any?
         if type(value) == "number" then
             return number.new(value)
         elseif type(value) == "string" then
             return string.new(value)
         elseif type(value) == "table" then
-            return table.new<<any, any, {[any] : any}>>(
-                transformRuntime(value),
-                getTransformed
-            )
-        else
-            error(`unsupported type {typeof(value)}`)
+            local mt : (arrayMT | dictMT)? = getmetatable(value)
+
+            if mt then
+                if mt.__index.type == "dict" then
+                    return dict.new(transformRuntime(value), getTransformed)
+                elseif mt.__index.type == "array" then
+                    return array.new(transformRuntime(value), getTransformed)
+                end
+            end
         end
+
+        return nil
     end
 
     for key, value in pairs(input) do
-        result[key] = getTransformed(value)
+        result[key] = getTransformed(value) or value
     end
 
     return result :: transform<T>
 end
 
-module.transform = function<T>(input: T) : transform<T>
-    assert(type(input) == "table", "expected a table")
+module.array = function<T>(table_ : T) : arrayType<T>
+    local mt : arrayMT = {
+        __index = {type = "array"}
+    }
+    
+    return setmetatable(table_, mt) :: arrayType<T>
+end
 
+module.dict = function<T>(table_ : T) : dictType<T>
+    local mt : dictMT = {
+        __index = {type = "dict"}
+    }
+
+    return setmetatable(table_, mt) :: dictType<T>
+end
+
+module.transform = function<T>(input: T) : transform<T>
     return transformRuntime(input)
 end
 
