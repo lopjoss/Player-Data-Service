@@ -1,8 +1,6 @@
 --[[
     TODO
     update ancestor tables on generic value change
-    fix type solver limit being hit
-    transform table to respective handler on table handler API insertion
 ]]
 
 local number = require("@self/fields/number")
@@ -11,9 +9,71 @@ local array = require("@self/fields/array")
 local dict = require("@self/fields/dict")
 
 type stringClassType = string.classType
-type dictClassType<T, U, V> = dict.classType<T, U, V>
-type arrayClassType<T, U> = array.classType<T, U>
 type numberClassType = number.classType
+type function dictClassType(T: type, U: type, V: type): type
+    local result = types.newtable()
+
+    result:setproperty(types.singleton("_table"), types.newtable(nil, {
+        index = T,
+        readresult = U,
+        writeresult = U,
+    }))
+
+    result:setproperty(types.singleton("_transform"), types.newfunction(
+        {head = {V}},
+        {head = {types.optional(U)}}
+    ))
+
+    local function addMethod(
+        name: string,
+        parameters: {type},
+        returns: {type}
+    )
+        result:setproperty(types.singleton(name), types.newfunction(
+            {head = parameters},
+            {head = returns}
+        ))
+    end
+
+    addMethod("Get", {result, T}, {U})
+    addMethod("Set", {result, T, V}, {U})
+
+    return result
+end
+type function arrayClassType(T: type, U: type): type
+    local result = types.newtable()
+
+    result:setproperty(types.singleton("_table"), types.newtable(nil, {
+        index = types.number,
+        readresult = T,
+        writeresult = T,
+    }))
+
+    result:setproperty(types.singleton("_transform"), types.newfunction(
+        {head = {U}},
+        {head = {T}}
+    ))
+
+    local function addMethod(
+        name: string,
+        parameters: {type},
+        returns: {type}
+    )
+        result:setproperty(types.singleton(name), types.newfunction(
+            {head = parameters},
+            {head = returns}
+        ))
+    end
+
+    local optionalNumber = types.optional(types.number)
+
+    addMethod("Get", {result, types.number}, {T})
+    addMethod("Insert", {result, U, optionalNumber}, {T})
+    addMethod("Remove", {result, types.number}, {types.optional(T)})
+    addMethod("Find", {result, T, optionalNumber}, {optionalNumber})
+
+    return result
+end
 
 type arrayMT = {__index : {type : "array"}}
 type dictMT = {__index : {type : "dict"}}
