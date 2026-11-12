@@ -2,13 +2,14 @@
   "name": "player-data-service",
   "tree": {
     "$className": "DataModel",
-
     "ReplicatedStorage": {
       "PlayerDataService": {
-        "$path": "src/playerDataService"
+        "$path": "ServerPackages",
+        "Main": {
+          "$path": "src/playerDataService"
+        }
       }
     },
-
     "Workspace": {
       "$properties": {
         "FilteringEnabled": true
