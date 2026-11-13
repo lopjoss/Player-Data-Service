@@ -4,11 +4,16 @@ local string = require("@self/fields/string")
 local table_ = require("@self/fields/table")
 local boolean = require("@self/fields/boolean")
 local profileStore = require(script.Parent.ProfileStore)
+local signal = require(script.Parent.Signal)
 
 type stringClassType = string.classType
 type numberClassType = number.classType
 type booleanClassType = boolean.classType
-type function tableClassType(T: type, U: type, V: type, isArray : boolean): type
+
+type getEntrySignal = <T, U>(
+    self : {_table : {[T] : U}}
+) -> signal.classType<U, T>
+type function tableClassType(T : type, U : type, V : type, isArray : boolean) : type
     local result = types.newtable()
 
     result:setproperty(types.singleton("_table"), types.newtable(nil, {
@@ -23,23 +28,28 @@ type function tableClassType(T: type, U: type, V: type, isArray : boolean): type
     ))
 
     local function addMethod(
-        name: string,
-        parameters: {type},
-        returns: {type}
+        name : string,
+        parameters : {type},
+        returns : {type}
     )
         result:setproperty(types.singleton(name), types.newfunction(
             {head = parameters},
             {head = returns}
         ))
     end
+    
+    addMethod("Get", {result, T}, {U})
+    addMethod("Iterate", {result}, {types.newfunction({}, {head = {types.optional(T), U}})})
+    result:setproperty(types.singleton("OnAdded"), getEntrySignal)
+    result:setproperty(types.singleton("OnRemoved"), getEntrySignal)
 
     if isArray then
         addMethod("Insert", {result, V, types.optional(types.number)}, {U})
         addMethod("Remove", {result, types.optional(types.number)}, {types.optional(U)})
         addMethod("Find", {result, U, types.optional(types.number)}, {types.optional(types.number)})
     else
-        addMethod("Get", {result, T}, {U})
         addMethod("Set", {result, T, V}, {U})
+        addMethod("Delete", {result, T}, {types.optional(U)})
     end
 
     return result
