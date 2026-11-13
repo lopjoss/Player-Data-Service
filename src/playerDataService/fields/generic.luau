@@ -4,6 +4,8 @@ type onChangedCallback<T> = (value : T, previousValue : T) -> ()
 type classContent<T> = {
     value : T,
     _onChangedSignal : signal.classType<T, T>?,
+    _rawDataParent : {[any] : any}?,
+    _rawDataKey : any,
 }
 type classMethods<T> = {
     Set : (self : classType<T>, value : T) -> (),
@@ -15,10 +17,12 @@ local module = {}
 local methods = {} :: classMethods<unknown>
 module.__index = methods
 
-module.new = function<T>(value : T) : classType<T>
+module.new = function<T>(value : T, rawDataParent : {[any] : any}, rawDataKey : any) : classType<T>
     local classContent : classContent<T> = {
         value = value,
         _onChangedSignal = nil,
+        _rawDataParent = rawDataParent,
+        _rawDataKey = rawDataKey,
     }
     local self = setmetatable(classContent, module) :: classType<T>
 
@@ -26,12 +30,17 @@ module.new = function<T>(value : T) : classType<T>
 end
 
 methods.Set = function<T>(self : classType<T>, value : T)
-    local previousValue = self.value
+    if self._rawDataParent then
+        local previousValue = self.value
 
-    self.value = value
+        self.value = value
+        self._rawDataParent[self._rawDataKey] = value
 
-    if self._onChangedSignal then
-        self._onChangedSignal:Fire(self.value, previousValue)
+        if self._onChangedSignal then
+            self._onChangedSignal:Fire(self.value, previousValue)
+        end
+    else
+        warn(debug.traceback("Cannot call Set on a data handler that has no raw data parent, did you delete this data previously?"))
     end
 end
 

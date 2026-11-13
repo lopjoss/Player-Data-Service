@@ -11,8 +11,8 @@ local module = {}
 local methods = setmetatable({}, generic) :: classMethods
 module.__index = methods
 
-module.new = function(value : number) : classType
-    local self = generic.new<<number>>(value)
+module.new = function(value : number, rawDataParent : {[any] : any}, rawDataKey : any) : classType
+    local self = generic.new<<number>>(value, rawDataParent, rawDataKey)
 
     return setmetatable(self, module) :: any
 end

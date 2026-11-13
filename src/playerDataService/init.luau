@@ -1,14 +1,13 @@
---[[
-    TODO
-    update ancestor tables on generic value change
-]]
-
+local Players = game:GetService("Players")
 local number = require("@self/fields/number")
 local string = require("@self/fields/string")
 local table_ = require("@self/fields/table")
+local boolean = require("@self/fields/boolean")
+local profileStore = require(script.Parent.ProfileStore)
 
 type stringClassType = string.classType
 type numberClassType = number.classType
+type booleanClassType = boolean.classType
 type function tableClassType(T: type, U: type, V: type, isArray : boolean): type
     local result = types.newtable()
 
@@ -19,7 +18,7 @@ type function tableClassType(T: type, U: type, V: type, isArray : boolean): type
     }))
 
     result:setproperty(types.singleton("_transform"), types.newfunction(
-        {head = {V}},
+        {head = {V, types.newtable(nil, {index = T, readresult = V, writeresult = V}), T}},
         {head = {types.optional(U)}}
     ))
 
@@ -36,8 +35,8 @@ type function tableClassType(T: type, U: type, V: type, isArray : boolean): type
 
     if isArray then
         addMethod("Insert", {result, V, types.optional(types.number)}, {U})
-        addMethod("Remove", {result, types.number}, {types.optional(U)})
-        addMethod("Find", {result, T, types.optional(types.number)}, {types.optional(types.number)})
+        addMethod("Remove", {result, types.optional(types.number)}, {types.optional(U)})
+        addMethod("Find", {result, U, types.optional(types.number)}, {types.optional(types.number)})
     else
         addMethod("Get", {result, T}, {U})
         addMethod("Set", {result, T, V}, {U})
@@ -56,6 +55,8 @@ type function transform(write : type) : type
             return numberClassType
         elseif type:is("string") then
             return stringClassType
+        elseif type:is("boolean") then
+            return booleanClassType
         elseif type:is("table") then
             local indexer = type:readindexer()
 
@@ -100,27 +101,112 @@ local function transformRuntime<T>(input : T) : transform<T>
     local input : {[any] : any} = input
     local result : {[any] : any} = {}
 
-    local function getTransformed(value : any) : any?
+    local function getTransformed(value : any, rawDataParent : {[any] : any}, rawDataKey : any) : any?
         if type(value) == "number" then
-            return number.new(value)
+            return number.new(value, rawDataParent, rawDataKey)
         elseif type(value) == "string" then
-            return string.new(value)
+            return string.new(value, rawDataParent, rawDataKey)
+        elseif type(value) == "boolean" then
+            return boolean.new(value, rawDataParent, rawDataKey)
         elseif type(value) == "table" then
-            return table_.new(transformRuntime(value), getTransformed)
+            return table_.new(transformRuntime(value), value, getTransformed)
         end
 
         return nil
     end
 
     for key, value in pairs(input) do
-        result[key] = getTransformed(value) or value
+        result[key] = getTransformed(value, input, key) or value
     end
 
     return result :: transform<T>
 end
 
-module.transform = function<T>(input: T) : transform<T>
-    return transformRuntime(input)
+module.init = function<T>(dataTemplate : T) : (Player) -> (transform<T>?)
+    local playerStore = profileStore.New("PlayerStore", dataTemplate)
+    local profiles : {[Player] : profileStore.Profile<any>} = {}
+    local dataHandlers : {[Player] : transform<T>} = {}
+    local pendingRequests : {[Player] : {thread}} = {}
+
+    local function getDataHandlerAsync(player : Player) : transform<T>?
+        if player.Parent == Players then
+            local dataHandler = dataHandlers[player]
+
+            if dataHandler then
+                return dataHandler
+            else
+                pendingRequests[player] = pendingRequests[player] or {}
+                table.insert(pendingRequests[player], coroutine.running())
+
+                return coroutine.yield<<(), (transform<T>?)>>()
+            end
+        else
+            return nil
+        end
+    end
+
+    local function clearPendingRequests(player : Player, dataHandler : transform<T>?)
+        local playerPendingRequests = pendingRequests[player]
+
+        if playerPendingRequests then
+            pendingRequests[player] = nil
+            
+            for _, thread in ipairs(playerPendingRequests) do
+                task.spawn(thread, player.Parent == Players and dataHandler or nil)
+            end
+        end
+    end
+
+    local function initPlayer(player : Player)
+        local profile = playerStore:StartSessionAsync(`{player.UserId}`, {
+            Cancel = function()
+                return player.Parent ~= Players
+            end,
+        })
+        local dataHandler : transform<T>?
+
+        if profile ~= nil then
+            profile:AddUserId(player.UserId)
+
+            profile.OnSessionEnd:Connect(function()
+                dataHandlers[player] = nil
+                profiles[player] = nil
+
+                player:Kick(`profile session has ended, please rejoin`)
+            end)
+
+            if player.Parent == Players then
+                dataHandler = transformRuntime(profile.Data)
+
+                dataHandlers[player] = dataHandler
+                profiles[player] = profile
+            else
+                profile:EndSession()
+            end
+        else
+            player:Kick(`profile failed to load, please rejoin`)
+        end
+
+        clearPendingRequests(player, player.Parent == Players and dataHandler or nil)
+    end
+
+    Players.PlayerAdded:Connect(function(player)
+        initPlayer(player)
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        local profile = profiles[player]
+
+        if profile ~= nil then
+            profile:EndSession()
+        end
+    end)
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        task.spawn(initPlayer, player)
+    end
+
+    return getDataHandlerAsync
 end
 
 return module
