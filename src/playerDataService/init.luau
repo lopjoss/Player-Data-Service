@@ -122,8 +122,12 @@ local function transformRuntime<T>(input : T) : transform<T>
     return result :: transform<T>
 end
 
-module.init = function<T>(dataTemplate : T) : (Player) -> (transform<T>?)
-    local playerStore = profileStore.New("PlayerStore", dataTemplate)
+module.init = function<T>(
+    dataTemplate : T,
+    storeName : string?,
+    useMock : boolean?
+) : (Player) -> (transform<T>?)
+    local playerStore = profileStore.New(storeName or "PlayerStore", dataTemplate)
     local profiles : {[Player] : profileStore.Profile<any>} = {}
     local dataHandlers : {[Player] : transform<T>} = {}
     local pendingRequests : {[Player] : {thread}} = {}
@@ -158,7 +162,7 @@ module.init = function<T>(dataTemplate : T) : (Player) -> (transform<T>?)
     end
 
     local function initPlayer(player : Player)
-        local profile = playerStore:StartSessionAsync(`{player.UserId}`, {
+        local profile = (useMock and playerStore.Mock or playerStore):StartSessionAsync(`{player.UserId}`, {
             Cancel = function()
                 return player.Parent ~= Players
             end,
