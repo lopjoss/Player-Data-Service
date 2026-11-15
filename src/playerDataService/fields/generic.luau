@@ -1,11 +1,14 @@
 local signal = require("../../Signal")
+local replica = require("../../Replica")
+local util = require("../util")
 
 type onChangedCallback<T> = (value : T, previousValue : T) -> ()
 type classContent<T> = {
     value : T,
     _onChangedSignal : signal.classType<T, T>?,
-    _rawDataParent : {[any] : any}?,
-    _rawDataKey : any,
+    _replica : replica.replicaServer?,
+    _parent : {[any] : any}?,
+    _key : any,
 }
 type classMethods<T> = {
     Set : (self : classType<T>, value : T) -> (),
@@ -17,12 +20,16 @@ local module = {}
 local methods = {} :: classMethods<unknown>
 module.__index = methods
 
-module.new = function<T>(value : T, rawDataParent : {[any] : any}, rawDataKey : any) : classType<T>
+module.new = function<T>(
+    value : T,
+    replica : replica.replicaServer,
+    key : any
+) : classType<T>
     local classContent : classContent<T> = {
         value = value,
         _onChangedSignal = nil,
-        _rawDataParent = rawDataParent,
-        _rawDataKey = rawDataKey,
+        _replica = replica,
+        _key = key 
     }
     local self = setmetatable(classContent, module) :: classType<T>
 
@@ -30,17 +37,14 @@ module.new = function<T>(value : T, rawDataParent : {[any] : any}, rawDataKey : 
 end
 
 methods.Set = function<T>(self : classType<T>, value : T)
-    if self._rawDataParent then
-        local previousValue = self.value
+    local path, replica = util.solvePath(self)
+    local previousValue = self.value
 
-        self.value = value
-        self._rawDataParent[self._rawDataKey] = value
+    self.value = value
+    replica:Set(path, value)
 
-        if self._onChangedSignal then
-            self._onChangedSignal:Fire(self.value, previousValue)
-        end
-    else
-        warn(debug.traceback("Cannot call Set on a data handler that has no raw data parent, did you delete this data previously?"))
+    if self._onChangedSignal then
+        self._onChangedSignal:Fire(self.value, previousValue)
     end
 end
 

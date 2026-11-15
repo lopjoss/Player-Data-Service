@@ -1,10 +1,15 @@
 local Players = game:GetService("Players")
+
 local number = require("@self/fields/number")
 local string = require("@self/fields/string")
 local table_ = require("@self/fields/table")
 local boolean = require("@self/fields/boolean")
-local profileStore = require(script.Parent.ProfileStore)
-local signal = require(script.Parent.Signal)
+local profileStore = require("./ProfileStore")
+local signal = require("./Signal")
+local replica = require("./Replica")
+
+local replicaServer = replica.server()
+local playerDataToken = replicaServer.Token("PlayerData")
 
 type stringClassType = string.classType
 type numberClassType = number.classType
@@ -21,11 +26,6 @@ type function tableClassType(T : type, U : type, V : type, isArray : boolean) : 
         readresult = U,
         writeresult = U,
     }))
-
-    result:setproperty(types.singleton("_transform"), types.newfunction(
-        {head = {V, types.newtable(nil, {index = T, readresult = V, writeresult = V}), T}},
-        {head = {types.optional(U)}}
-    ))
 
     local function addMethod(
         name : string,
@@ -105,28 +105,37 @@ end
 
 local module = {}
 
-local function transformRuntime<T>(input : T) : transform<T>
+local function transformRuntime<T>(input : T, replica : replica.replicaServer) : transform<T>
     assert(type(input) == "table", "expected a table type")
 
     local input : {[any] : any} = input
     local result : {[any] : any} = {}
 
-    local function getTransformed(value : any, rawDataParent : {[any] : any}, rawDataKey : any) : any?
+    local function getTransformed(value : any, replica : replica.replicaServer, key : any) : any?
         if type(value) == "number" then
-            return number.new(value, rawDataParent, rawDataKey)
+            return number.new(value, replica, key)
         elseif type(value) == "string" then
-            return string.new(value, rawDataParent, rawDataKey)
+            return string.new(value, replica, key)
         elseif type(value) == "boolean" then
-            return boolean.new(value, rawDataParent, rawDataKey)
+            return boolean.new(value, replica, key)
         elseif type(value) == "table" then
-            return table_.new(transformRuntime(value), value, getTransformed)
+            local dataHandler = table_.new({}, getTransformed, replica, key)
+            local childDataHandlers = transformRuntime(value, replica)
+
+            for key, childDataHandler in pairs(childDataHandlers) do
+                dataHandler._table[key] = childDataHandler
+
+                rawset(childDataHandler :: any, "_parent", dataHandler)
+            end
+
+            return dataHandler
         end
 
         return nil
     end
 
     for key, value in pairs(input) do
-        result[key] = getTransformed(value, input, key) or value
+        result[key] = getTransformed(value, replica, key) or value
     end
 
     return result :: transform<T>
@@ -139,15 +148,16 @@ module.init = function<T>(
 ) : (Player) -> (transform<T>?)
     local playerStore = profileStore.New(storeName or "PlayerStore", dataTemplate)
     local profiles : {[Player] : profileStore.Profile<any>} = {}
-    local dataHandlers : {[Player] : transform<T>} = {}
+    local playerData : {[Player] : transform<T>} = {}
     local pendingRequests : {[Player] : {thread}} = {}
+    local replicas : {[Player] : replica.replicaServer} = {}
 
-    local function getDataHandlerAsync(player : Player) : transform<T>?
+    local function getPlayerDataAsync(player : Player) : transform<T>?
         if player.Parent == Players then
-            local dataHandler = dataHandlers[player]
+            local playerData = playerData[player]
 
-            if dataHandler then
-                return dataHandler
+            if playerData then
+                return playerData
             else
                 pendingRequests[player] = pendingRequests[player] or {}
                 table.insert(pendingRequests[player], coroutine.running())
@@ -159,14 +169,14 @@ module.init = function<T>(
         end
     end
 
-    local function clearPendingRequests(player : Player, dataHandler : transform<T>?)
+    local function clearPendingRequests(player : Player, playerData : transform<T>?)
         local playerPendingRequests = pendingRequests[player]
 
         if playerPendingRequests then
             pendingRequests[player] = nil
             
             for _, thread in ipairs(playerPendingRequests) do
-                task.spawn(thread, player.Parent == Players and dataHandler or nil)
+                task.spawn(thread, player.Parent == Players and playerData or nil)
             end
         end
     end
@@ -177,23 +187,36 @@ module.init = function<T>(
                 return player.Parent ~= Players
             end,
         })
-        local dataHandler : transform<T>?
+        local data : transform<T>?
 
         if profile ~= nil then
             profile:AddUserId(player.UserId)
 
             profile.OnSessionEnd:Connect(function()
-                dataHandlers[player] = nil
+                playerData[player] = nil
                 profiles[player] = nil
+
+                if replicas[player] then
+                    replicas[player]:Destroy()
+                    replicas[player] = nil
+                end
 
                 player:Kick(`profile session has ended, please rejoin`)
             end)
 
             if player.Parent == Players then
-                dataHandler = transformRuntime(profile.Data)
+                local replica = replicaServer.New({
+                    Token = playerDataToken :: any,
+                    Data = profile.Data,
+                })
 
-                dataHandlers[player] = dataHandler
+                replica:Subscribe(player)
+
+                data = transformRuntime(profile.Data, replica)
+
+                playerData[player] = data
                 profiles[player] = profile
+                replicas[player] = replica
             else
                 profile:EndSession()
             end
@@ -201,7 +224,7 @@ module.init = function<T>(
             player:Kick(`profile failed to load, please rejoin`)
         end
 
-        clearPendingRequests(player, player.Parent == Players and dataHandler or nil)
+        clearPendingRequests(player, player.Parent == Players and data or nil)
     end
 
     Players.PlayerAdded:Connect(function(player)
@@ -220,7 +243,7 @@ module.init = function<T>(
         task.spawn(initPlayer, player)
     end
 
-    return getDataHandlerAsync
+    return getPlayerDataAsync
 end
 
 return module

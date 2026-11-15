@@ -1,11 +1,15 @@
-local signal = require(script.Parent.Parent.Parent.Signal)
+local signal = require("../../Signal")
+local replica = require("../../Replica")
+local util = require("../util")
 
 type classContent<T, U, V> = {
     _table : {[T] : U},
     _onAddedSignal : signal.classType<U, T>?,
     _onRemovedSignal : signal.classType<U, T>?,
-    _rawDataTable : {[T] : V},
-    _transform : (V, rawDataParent : {[T] : V}, rawDataKey : T) -> U?,
+    _transform : (V, replica : replica.replicaServer, key : any) -> U?,
+    _replica : replica.replicaServer?,
+    _parent : {[any] : any}?,
+    _key : any,
 }
 type classMethods<T, U, V> = {
     Get : (self : classType<T, U, V>, key : T) -> U,
@@ -18,7 +22,7 @@ type classMethods<T, U, V> = {
     Delete : (self : classType<T, U, V>, key : T) -> U?,
 
     -- array
-    _UpdateDataHandlerKeys : (self : classType<T, U, V>) -> (),
+    _UpdateKeys : (self : classType<T, U, V>) -> (),
     Insert : (self : classType<T, U, V>, value : V, position : number?) -> U,
     Remove : (self : classType<T, U, V>, position : number?) -> U?,
     Find : (self : classType<T, U, V>, needle : U, init : number?) -> number?
@@ -39,13 +43,15 @@ end
 
 module.new = function<T, U, V>(
     table : {[T] : U},
-    rawDataTable : {[T] : V},
-    transform : (V, {[T] : V}, T) -> U?
+    transform : (V, replica : replica.replicaServer, path : {any}) -> U?,
+    replica : replica.replicaServer,
+    key : any
 ) : classType<T, U, V>
     local classContent : classContent<T, U, V> = {
         _table = table,
-        _rawDataTable = rawDataTable,
-        _transform = transform
+        _transform = transform,
+        _replica = replica,
+        _key = key,
     }
 
     return setmetatable(classContent, module) :: classType<T, U, V>
@@ -97,12 +103,17 @@ end
 -- dictionary methods
 
 methods.Set = function<T, U, V>(self : classType<T, U, V>, key : T, value : V) : U
-    local transformed = (self._transform(value, self._rawDataTable, key) or value) :: U
+    local path, replica = util.solvePath(self)
+    local transformed = (self._transform(value, replica, key) or value) :: U
     local previousValue = self._table[key]
     local onAddedSignal : signal.classType<U, T>? = rawget(self :: any, "_onAddedSignal")
 
+    rawset(transformed, "_parent", self)
+
     self._table[key] = transformed
-    self._rawDataTable[key] = value
+
+    table.insert(path, key)
+    replica:Set(path, value)
 
     if previousValue ~= nil then
         local onRemovedSignal : signal.classType<U, T>? = rawget(self :: any, "_onRemovedSignal")
@@ -111,8 +122,8 @@ methods.Set = function<T, U, V>(self : classType<T, U, V>, key : T, value : V) :
             onRemovedSignal:Fire(previousValue, key)
         end
 
-        if rawget(previousValue, "_rawDataParent") then
-            rawset(previousValue, "_rawDataParent", nil)
+        if rawget(previousValue, "_replica") then
+            rawset(previousValue, "_replica", nil)
         end
     end
 
@@ -128,16 +139,19 @@ methods.Delete = function<T, U, V>(self : classType<T, U, V>, key : T) : U?
 
     if removed ~= nil then
         local onRemovedSignal : signal.classType<U, T>? = rawget(self :: any, "_onRemovedSignal")
+        local path, replica = util.solvePath(self)
+
+        table.insert(path, key)
+        replica:Set(path, nil)
 
         self._table[key] = nil
-        self._rawDataTable[key] = nil
 
         if onRemovedSignal then
             onRemovedSignal:Fire(removed, key)
         end
 
-        if rawget(removed, "_rawDataParent") then
-            rawset(removed, "_rawDataParent", nil)
+        if rawget(removed, "_replica") then
+            rawset(removed, "_replica", nil)
         end
     end
 
@@ -146,67 +160,62 @@ end
 
 -- array methods
 
-methods._UpdateDataHandlerKeys = function<T, U, V>(self : classType<T, U, V>)
-    for key, dataHandler in pairs(self._table) do
-        if rawget(dataHandler, "_rawDataKey") then
-            rawset(dataHandler, "_rawDataKey", key)
-        end
+methods._UpdateKeys = function<T, U, V>(self : classType<T, U, V>)
+    for key, dataHandler in ipairs(self._table) do
+        rawset(dataHandler, "_key", key)
     end
 end
 
 methods.Insert = function<T, U, V>(self : classType<T, U, V>, value : V, position : number?) : U
-    local last = #self._rawDataTable
-    local index = math.floor(position or last + 1)
-    local key = index :: T
-
-    if index >= 1 and index <= last then
-        local transformed = (self._transform(value, self._rawDataTable, key) or value) :: U
-        local onAddedSignal : signal.classType<U, T>? = rawget(self :: any, "_onAddedSignal")
+    local path, replica = util.solvePath(self)
+    local transformed = (self._transform(value, replica, position) or value) :: U
+    local onAddedSignal : signal.classType<U, T>? = rawget(self :: any, "_onAddedSignal")
     
-        table.insert(self._rawDataTable, index, value)
+    position = position and math.floor(position)
+    position = position and (if position > #self._table then #self._table + 1
+        elseif position <= 0 then 1 else position) or #self._table + 1
 
-        table.move(self._table, index, last, index + 1)
-        self._table[key] = transformed
+    rawset(transformed, "_parent", self)
 
-        if onAddedSignal then
-            onAddedSignal:Fire(transformed, key)
-        end
+    table.insert(self._table, position, transformed)
 
-        self:_UpdateDataHandlerKeys()
+    replica:TableInsert(path, value, position)
+    
+    self:_UpdateKeys()
 
-        return transformed
-    else
-        return self:Set(key, value)
+    if onAddedSignal then
+        onAddedSignal:Fire(transformed, (position or #self._table) :: T)
     end
+
+    return transformed
 end
 
 methods.Remove = function<T, U, V>(self : classType<T, U, V>, position : number?) : U?
-    local last = #self._rawDataTable
-    local index = math.floor(position or last)
-    local key = index :: T
-    
-    if index >= 1 and index <= last then
-        local removed = self._table[key]
-
-        table.remove(self._rawDataTable, index)
+    if #self._table > 0 then
+        local path, replica = util.solvePath(self)
         
-        table.move(self._table, index + 1, last, index)
-        self._table[last :: T] = nil
-    
-        if removed ~= nil then
+        position = position and math.floor(position)
+        position = position and (if position > #self._table then #self._table
+            elseif position <= 0 then 1 else position) or #self._table
+            
+        local removed = table.remove(self._table, position)
+
+        replica:TableRemove(path, position)
+        
+        if removed ~= nil then        
+            if rawget(removed, "_replica") then
+                rawset(removed, "_replica", nil)
+            end
+
+            self:_UpdateKeys()
+
             local onRemovedSignal : signal.classType<U, T>? = rawget(self :: any, "_onRemovedSignal")
 
             if onRemovedSignal then
-                onRemovedSignal:Fire(removed, key)
-            end
-            
-            if rawget(removed, "_rawDataParent") then
-                rawset(removed, "_rawDataParent", nil)
+                onRemovedSignal:Fire(removed, position :: T)
             end
         end
-    
-        self:_UpdateDataHandlerKeys()
-    
+
         return removed
     end
 
