@@ -9,7 +9,7 @@ dependencies = []
 
 [[package]]
 name = "lopjoss/replica-wrapper"
-version = "1.0.1"
+version = "1.0.3"
 dependencies = []
 
 [[package]]
@@ -20,4 +20,4 @@ dependencies = []
 [[package]]
 name = "lopjoss/player-data-service"
 version = "1.0.0"
-dependencies = [["ProfileStore", "lm-loleris/profilestore@1.0.3"], ["Replica", "lopjoss/replica-wrapper@1.0.1"], ["Signal", "lopjoss/signal@1.0.0"]]
+dependencies = [["ProfileStore", "lm-loleris/profilestore@1.0.3"], ["Replica", "lopjoss/replica-wrapper@1.0.3"], ["Signal", "lopjoss/signal@1.0.0"]]

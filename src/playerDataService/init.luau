@@ -1,15 +1,13 @@
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 local number = require("@self/fields/number")
 local string = require("@self/fields/string")
 local table_ = require("@self/fields/table")
+local util = require("@self/util")
 local boolean = require("@self/fields/boolean")
-local profileStore = require("./ProfileStore")
 local signal = require("./Signal")
 local replica = require("./Replica")
-
-local replicaServer = replica.server()
-local playerDataToken = replicaServer.Token("PlayerData")
 
 type stringClassType = string.classType
 type numberClassType = number.classType
@@ -90,7 +88,7 @@ type function transform(write : type) : type
                 return transform(type)
             end
         else
-            error(`unsupported type {type}`)
+            error(`Unsupported type {type}`)
         end
     end
 
@@ -105,27 +103,25 @@ end
 
 local module = {}
 
-local function transformRuntime<T>(input : T, replica : replica.replicaServer) : transform<T>
+local function transformRuntime<T>(input : T, replicaContext : util.replicaContext, parent : {[any] : any}?) : transform<T>
     assert(type(input) == "table", "expected a table type")
 
     local input : {[any] : any} = input
     local result : {[any] : any} = {}
 
-    local function getTransformed(value : any, replica : replica.replicaServer, key : any) : any?
+    local function getTransformed(value : any, replicaContext : util.replicaContext, key : any, parent : {[any] : any}?) : any?
         if type(value) == "number" then
-            return number.new(value, replica, key)
+            return number.new(value, replicaContext, key, parent)
         elseif type(value) == "string" then
-            return string.new(value, replica, key)
+            return string.new(value, replicaContext, key, parent)
         elseif type(value) == "boolean" then
-            return boolean.new(value, replica, key)
+            return boolean.new(value, replicaContext, key, parent)
         elseif type(value) == "table" then
-            local dataHandler = table_.new({}, getTransformed, replica, key)
-            local childDataHandlers = transformRuntime(value, replica)
+            local dataHandler = table_.new({}, getTransformed, replicaContext, key, parent)
+            local childDataHandlers = transformRuntime(value, replicaContext, dataHandler :: {[any] : any})
 
             for key, childDataHandler in pairs(childDataHandlers) do
                 dataHandler._table[key] = childDataHandler
-
-                rawset(childDataHandler :: any, "_parent", dataHandler)
             end
 
             return dataHandler
@@ -135,7 +131,7 @@ local function transformRuntime<T>(input : T, replica : replica.replicaServer) :
     end
 
     for key, value in pairs(input) do
-        result[key] = getTransformed(value, replica, key) or value
+        result[key] = getTransformed(value, replicaContext, key, parent) or value
     end
 
     return result :: transform<T>
@@ -145,105 +141,178 @@ module.init = function<T>(
     dataTemplate : T,
     storeName : string?,
     useMock : boolean?
-) : (Player) -> (transform<T>?)
-    local playerStore = profileStore.New(storeName or "PlayerStore", dataTemplate)
-    local profiles : {[Player] : profileStore.Profile<any>} = {}
-    local playerData : {[Player] : transform<T>} = {}
-    local pendingRequests : {[Player] : {thread}} = {}
-    local replicas : {[Player] : replica.replicaServer} = {}
+) : {
+    server : {
+        getPlayerDataAsync : (Player) -> transform<T>?,
+    },
+    client : {
+        getPlayerDataAsync : () -> transform<T>,
+    },
+}
+    if RunService:IsServer() then
+        local profileStore = require("./ProfileStore")
+        local replicaServer = replica.server()
 
-    local function getPlayerDataAsync(player : Player) : transform<T>?
-        if player.Parent == Players then
-            local playerData = playerData[player]
+        local playerDataToken = replicaServer.Token("PlayerData")
+        local playerStore = profileStore.New(storeName or "PlayerStore", dataTemplate)
+        local profiles : {[Player] : profileStore.Profile<any>} = {}
+        local playerData : {[Player] : transform<T>} = {}
+        local pendingRequests : {[Player] : {thread}} = {}
+        local replicas : {[Player] : replica.replicaServer} = {}
 
-            if playerData then
-                return playerData
+        local function getPlayerDataAsync(player : Player) : transform<T>?
+            if player.Parent == Players then
+                local playerData = playerData[player]
+
+                if playerData then
+                    return playerData
+                else
+                    pendingRequests[player] = pendingRequests[player] or {}
+                    table.insert(pendingRequests[player], coroutine.running())
+
+                    return coroutine.yield<<(), (transform<T>?)>>()
+                end
             else
-                pendingRequests[player] = pendingRequests[player] or {}
-                table.insert(pendingRequests[player], coroutine.running())
-
-                return coroutine.yield<<(), (transform<T>?)>>()
-            end
-        else
-            return nil
-        end
-    end
-
-    local function clearPendingRequests(player : Player, playerData : transform<T>?)
-        local playerPendingRequests = pendingRequests[player]
-
-        if playerPendingRequests then
-            pendingRequests[player] = nil
-            
-            for _, thread in ipairs(playerPendingRequests) do
-                task.spawn(thread, player.Parent == Players and playerData or nil)
+                return nil
             end
         end
-    end
 
-    local function initPlayer(player : Player)
-        local profile = (useMock and playerStore.Mock or playerStore):StartSessionAsync(`{player.UserId}`, {
-            Cancel = function()
-                return player.Parent ~= Players
-            end,
-        })
-        local data : transform<T>?
+        local function clearPendingRequests(player : Player, playerData : transform<T>?)
+            local playerPendingRequests = pendingRequests[player]
 
-        if profile ~= nil then
-            profile:AddUserId(player.UserId)
+            if playerPendingRequests then
+                pendingRequests[player] = nil
+                
+                for _, thread in ipairs(playerPendingRequests) do
+                    task.spawn(thread, player.Parent == Players and playerData or nil)
+                end
+            end
+        end
 
-            profile.OnSessionEnd:Connect(function()
-                playerData[player] = nil
-                profiles[player] = nil
+        local function initPlayer(player : Player)
+            if replicaServer then
+                local profile = (useMock and playerStore.Mock or playerStore):StartSessionAsync(`{player.UserId}`, {
+                    Cancel = function()
+                        return player.Parent ~= Players
+                    end,
+                })
+                local data : transform<T>?
 
-                if replicas[player] then
-                    replicas[player]:Destroy()
-                    replicas[player] = nil
+                if profile ~= nil then
+                    local thread : thread?
+
+                    profile:AddUserId(player.UserId)
+                    profile:Reconcile()
+
+                    profile.OnSessionEnd:Connect(function()
+                        playerData[player] = nil
+                        profiles[player] = nil
+
+                        if thread then
+                            task.cancel(thread)
+                        end
+
+                        if replicas[player] then
+                            replicas[player]:Destroy()
+                            replicas[player] = nil
+                        end
+
+                        player:Kick(`profile session has ended, please rejoin`)
+                    end)
+
+                    if player.Parent == Players then
+                        local replica = replicaServer.New({
+                            Token = playerDataToken :: any,
+                            Data = profile.Data,
+                        })
+
+                        if not replicaServer.ReadyPlayers[player] then
+                            thread = coroutine.running()
+
+                            local conn : replica.replicaConnection
+                            conn = replicaServer.NewReadyPlayer:Connect(function(readyPlayer)
+                                if readyPlayer == player then
+                                    conn:Disconnect()
+
+                                    task.spawn(thread :: thread)
+                                end
+                            end)
+
+                            coroutine.yield()
+                        end
+
+                        replica:Subscribe(player)
+
+                        data = transformRuntime(profile.Data, util.getReplicaContext(replica))
+
+                        playerData[player] = data
+                        profiles[player] = profile
+                        replicas[player] = replica
+                    else
+                        profile:EndSession()
+                    end
+                else
+                    player:Kick(`profile failed to load, please rejoin`)
                 end
 
-                player:Kick(`profile session has ended, please rejoin`)
-            end)
+                clearPendingRequests(player, player.Parent == Players and data or nil)
+            end
+        end
 
-            if player.Parent == Players then
-                local replica = replicaServer.New({
-                    Token = playerDataToken :: any,
-                    Data = profile.Data,
-                })
+        Players.PlayerAdded:Connect(function(player)
+            initPlayer(player)
+        end)
 
-                replica:Subscribe(player)
+        Players.PlayerRemoving:Connect(function(player)
+            local profile = profiles[player]
 
-                data = transformRuntime(profile.Data, replica)
-
-                playerData[player] = data
-                profiles[player] = profile
-                replicas[player] = replica
-            else
+            if profile ~= nil then
                 profile:EndSession()
             end
-        else
-            player:Kick(`profile failed to load, please rejoin`)
+        end)
+
+        for _, player in ipairs(Players:GetPlayers()) do
+            task.spawn(initPlayer, player)
         end
 
-        clearPendingRequests(player, player.Parent == Players and data or nil)
-    end
+        return {
+            server = {
+                getPlayerDataAsync = getPlayerDataAsync,
+            },
+            client = nil :: any,
+        }
+    else
+        local replicaClient = replica.client()
 
-    Players.PlayerAdded:Connect(function(player)
-        initPlayer(player)
-    end)
+        replicaClient.RequestData()
 
-    Players.PlayerRemoving:Connect(function(player)
-        local profile = profiles[player]
+        local function getPlayerDataAsync() : transform<T>
+            if replicaClient then
+                local thread = coroutine.running()
 
-        if profile ~= nil then
-            profile:EndSession()
+                local conn : replica.replicaConnection
+                conn = replicaClient.OnNew("PlayerData", function(replica)
+                    conn:Disconnect()
+
+                    task.spawn(thread, replica)
+                end)
+
+                local replica = coroutine.yield<<(), (replica.replicaClient)>>()
+                local playerData = transformRuntime(replica.Data :: T, util.getReplicaContext(replica))
+
+                return playerData
+            else
+                error("No client replica class found")
+            end
         end
-    end)
 
-    for _, player in ipairs(Players:GetPlayers()) do
-        task.spawn(initPlayer, player)
+        return {
+            server = nil :: any,
+            client = {
+                getPlayerDataAsync = getPlayerDataAsync,
+            },
+        }
     end
-
-    return getPlayerDataAsync
 end
 
 return module

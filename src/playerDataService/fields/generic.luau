@@ -1,12 +1,13 @@
 local signal = require("../../Signal")
-local replica = require("../../Replica")
 local util = require("../util")
+local replica = require("../../Replica")
 
 type onChangedCallback<T> = (value : T, previousValue : T) -> ()
 type classContent<T> = {
     value : T,
     _onChangedSignal : signal.classType<T, T>?,
-    _replica : replica.replicaServer?,
+    _replicaContext : util.replicaContext?,
+    _clientReplicaConnection : replica.replicaConnection?,
     _parent : {[any] : any}?,
     _key : any,
 }
@@ -22,26 +23,38 @@ module.__index = methods
 
 module.new = function<T>(
     value : T,
-    replica : replica.replicaServer,
-    key : any
+    replicaContext : util.replicaContext,
+    key : any,
+    parent : {[any] : any}?
 ) : classType<T>
     local classContent : classContent<T> = {
         value = value,
         _onChangedSignal = nil,
-        _replica = replica,
-        _key = key 
+        _replicaContext = replicaContext,
+        _key = key,
+        _parent = parent,
     }
     local self = setmetatable(classContent, module) :: classType<T>
+
+    if replicaContext.type == "client" then
+        local path = util.solvePath(self)
+
+        self._clientReplicaConnection = replicaContext.replica:OnSet(path, function(value)
+            self:Set(value)
+        end)
+    end
 
     return self
 end
 
 methods.Set = function<T>(self : classType<T>, value : T)
-    local path, replica = util.solvePath(self)
+    local path, replicaContext = util.solvePath(self)
     local previousValue = self.value
 
     self.value = value
-    replica:Set(path, value)
+    if replicaContext.type == "server" then
+        replicaContext.replica:Set(path, value)
+    end
 
     if self._onChangedSignal then
         self._onChangedSignal:Fire(self.value, previousValue)

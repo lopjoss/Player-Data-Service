@@ -1,13 +1,15 @@
 local signal = require("../../Signal")
-local replica = require("../../Replica")
 local util = require("../util")
+local replica = require("../../Replica")
 
+type transform<T, U> = (U, replicaContext : util.replicaContext, key : any, parent : {[any] : any}?) -> T?
 type classContent<T, U, V> = {
     _table : {[T] : U},
     _onAddedSignal : signal.classType<U, T>?,
     _onRemovedSignal : signal.classType<U, T>?,
-    _transform : (V, replica : replica.replicaServer, key : any) -> U?,
-    _replica : replica.replicaServer?,
+    _transform : transform<U, V>,
+    _replicaContext : util.replicaContext?,
+    _clientReplicaConnection : replica.replicaConnection?,
     _parent : {[any] : any}?,
     _key : any,
 }
@@ -43,18 +45,51 @@ end
 
 module.new = function<T, U, V>(
     table : {[T] : U},
-    transform : (V, replica : replica.replicaServer, path : {any}) -> U?,
-    replica : replica.replicaServer,
-    key : any
+    transform : transform<U, V>,
+    replicaContext : util.replicaContext,
+    key : any,
+    parent : {[any] : any}?
 ) : classType<T, U, V>
     local classContent : classContent<T, U, V> = {
         _table = table,
         _transform = transform,
-        _replica = replica,
+        _replicaContext = replicaContext,
         _key = key,
+        _parent = parent,
     }
+    local self = setmetatable(classContent, module) :: classType<T, U, V>
 
-    return setmetatable(classContent, module) :: classType<T, U, V>
+    if replicaContext.type == "client" then
+        self._clientReplicaConnection = replicaContext.replica:OnChange(function(action, onChangedPath, value, key)
+            if action == "Set" or action == "TableInsert" or action == "TableRemove" then
+                local path = util.solvePath(self)
+            
+                if action == "Set" and #path + 1 == #onChangedPath or #path == #onChangedPath then
+                    for i, key in ipairs(path) do
+                        if key ~= onChangedPath[i] then
+                            return
+                        end
+                    end
+
+                    if action == "TableInsert" then
+                        self:Insert(value, key)
+                    elseif action == "TableRemove" then
+                        self:Remove(key)
+                    elseif action == "Set" then
+                        key = onChangedPath[#onChangedPath]
+
+                        if value ~= nil then
+                            self:Set(key, value)
+                        else
+                            self:Delete(key)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    return self
 end
 
 methods.OnAdded = function<T, U, V>(self : classType<T, U, V>) : signal.classType<U, T>
@@ -102,28 +137,41 @@ end
 
 -- dictionary methods
 
+local function destroyDataHandler(dataHandler : util.dataHandler)
+    local connection = rawget(dataHandler :: any, "_clientReplicaConnection") :: replica.replicaConnection?
+    
+    if 
+        dataHandler._replicaContext
+        and dataHandler._replicaContext.type == "client"
+        and connection
+    then
+        connection:Disconnect()
+    end
+    
+    rawset(dataHandler :: any, "_replicaContext", nil)
+end
+
 methods.Set = function<T, U, V>(self : classType<T, U, V>, key : T, value : V) : U
-    local path, replica = util.solvePath(self)
-    local transformed = (self._transform(value, replica, key) or value) :: U
+    local path, replicaContext = util.solvePath(self)
+    local transformed = (self._transform(value, replicaContext, key, self :: {[any] : any}) or value) :: U
     local previousValue = self._table[key]
     local onAddedSignal : signal.classType<U, T>? = rawget(self :: any, "_onAddedSignal")
 
-    rawset(transformed, "_parent", self)
-
     self._table[key] = transformed
 
-    table.insert(path, key)
-    replica:Set(path, value)
+    if replicaContext.type == "server" then
+        table.insert(path, key)
+
+        replicaContext.replica:Set(path, value)
+    end
 
     if previousValue ~= nil then
         local onRemovedSignal : signal.classType<U, T>? = rawget(self :: any, "_onRemovedSignal")
 
+        destroyDataHandler(previousValue)
+        
         if onRemovedSignal then
             onRemovedSignal:Fire(previousValue, key)
-        end
-
-        if rawget(previousValue, "_replica") then
-            rawset(previousValue, "_replica", nil)
         end
     end
 
@@ -139,19 +187,20 @@ methods.Delete = function<T, U, V>(self : classType<T, U, V>, key : T) : U?
 
     if removed ~= nil then
         local onRemovedSignal : signal.classType<U, T>? = rawget(self :: any, "_onRemovedSignal")
-        local path, replica = util.solvePath(self)
+        local path, replicaContext = util.solvePath(self)
 
-        table.insert(path, key)
-        replica:Set(path, nil)
+        if replicaContext.type == "server" then
+            table.insert(path, key)
+
+            replicaContext.replica:Set(path, nil)
+        end
 
         self._table[key] = nil
 
+        destroyDataHandler(removed)
+
         if onRemovedSignal then
             onRemovedSignal:Fire(removed, key)
-        end
-
-        if rawget(removed, "_replica") then
-            rawset(removed, "_replica", nil)
         end
     end
 
@@ -167,19 +216,19 @@ methods._UpdateKeys = function<T, U, V>(self : classType<T, U, V>)
 end
 
 methods.Insert = function<T, U, V>(self : classType<T, U, V>, value : V, position : number?) : U
-    local path, replica = util.solvePath(self)
-    local transformed = (self._transform(value, replica, position) or value) :: U
+    local path, replicaContext = util.solvePath(self)
+    local transformed = (self._transform(value, replicaContext, position, self :: {[any] : any}) or value) :: U
     local onAddedSignal : signal.classType<U, T>? = rawget(self :: any, "_onAddedSignal")
     
     position = position and math.floor(position)
     position = position and (if position > #self._table then #self._table + 1
         elseif position <= 0 then 1 else position) or #self._table + 1
 
-    rawset(transformed, "_parent", self)
-
     table.insert(self._table, position, transformed)
-
-    replica:TableInsert(path, value, position)
+    
+    if replicaContext.type == "server" then
+        replicaContext.replica:TableInsert(path, value, position)
+    end
     
     self:_UpdateKeys()
 
@@ -192,7 +241,7 @@ end
 
 methods.Remove = function<T, U, V>(self : classType<T, U, V>, position : number?) : U?
     if #self._table > 0 then
-        local path, replica = util.solvePath(self)
+        local path, replicaContext = util.solvePath(self)
         
         position = position and math.floor(position)
         position = position and (if position > #self._table then #self._table
@@ -200,12 +249,12 @@ methods.Remove = function<T, U, V>(self : classType<T, U, V>, position : number?
             
         local removed = table.remove(self._table, position)
 
-        replica:TableRemove(path, position)
+        if replicaContext.type == "server" then
+            replicaContext.replica:TableRemove(path, position)
+        end
         
         if removed ~= nil then        
-            if rawget(removed, "_replica") then
-                rawset(removed, "_replica", nil)
-            end
+            destroyDataHandler(removed)
 
             self:_UpdateKeys()
 

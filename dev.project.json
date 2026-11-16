@@ -4,9 +4,28 @@
     "$className": "DataModel",
     "ReplicatedStorage": {
       "PlayerDataService": {
-        "$path": "ServerPackages",
-        "Main": {
-          "$path": "src/playerDataService"
+        "$path": "src/playerDataService.luau"
+      },
+      "Libs": {
+        "$className": "Folder",
+        "PlayerDataService": {
+          "$path": "ServerPackages",
+          "Main": {
+            "$path": "src/playerDataService"
+          }
+        }
+      }
+    },
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/testing.server.luau"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "Client": {
+          "$path": "src/testing.client.luau"
         }
       }
     },

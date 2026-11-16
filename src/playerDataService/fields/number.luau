@@ -1,5 +1,5 @@
 local generic = require("./generic")
-local replica = require("../../Replica")
+local util = require("../util")
 
 type classContent = {}
 type classMethods = {
@@ -14,10 +14,11 @@ module.__index = methods
 
 module.new = function(
     value : number,
-    replica : replica.replicaServer,
-    key : any
+    replicaContext : util.replicaContext,
+    key : any,
+    parent : {[any] : any}?
 ) : classType
-    local self = generic.new<<number>>(value, replica, key)
+    local self = generic.new<<number>>(value, replicaContext, key, parent)
 
     return setmetatable(self, module) :: any
 end
