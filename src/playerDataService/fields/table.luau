@@ -78,7 +78,7 @@ module.new = function<T, U, V>(
                     elseif action == "Set" then
                         key = onChangedPath[#onChangedPath]
 
-                        if value == nil then
+                        if value ~= nil then
                             self:Set(key, value)
                         else
                             self:Delete(key)
