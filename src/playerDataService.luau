@@ -3,55 +3,19 @@ local playerDataService = require(game.ReplicatedStorage.Libs.PlayerDataService.
 type schema = {
 	coins : number,
 	discovered : {number},
-	inv : {
-		pets : {
-			{
-				name : string,
-				mutations : {
-					[string] : {
-						strengths : {
-							a1 : {
-								b1 : {
-									[string] : {
-										[number] : {
-											c1 : boolean,
-										},
-									}
-								},
-							},
-						},
-					}
-				},
-			}
-		},
+	pets : {
+		{
+			name : string,
+			scale : number,
+			mutations : {string}
+		}
 	},
 }
 
 local template : schema = {
 	coins = 0,
 	discovered = {},
-	inv = {
-		pets = {
-			{
-				name = "Dog",
-				mutations = {
-					hi = {
-						strengths = {
-							a1 = {
-								b1 = {
-									hi = {
-										[1] = {
-											c1 = true
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+	pets = {}
 }
 
 return playerDataService.init<<schema>>(template)

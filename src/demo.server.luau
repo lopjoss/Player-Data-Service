@@ -6,8 +6,15 @@ Players.PlayerAdded:Connect(function(player)
 	local data = playerDataService.getPlayerDataAsync(player)
 
 	if data then
-		while task.wait(1) do
-			data.coins:Increment(20)
-		end
+		local pet = data.pets:Insert({
+			name = "Cat",
+			scale = 1,
+			mutations = {}
+		})
+
+		task.wait(2)
+
+		pet.mutations:Insert("Lava")
+		pet.mutations:Insert("T-T")
 	end
 end)

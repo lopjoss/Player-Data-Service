@@ -17,15 +17,15 @@
       }
     },
     "ServerScriptService": {
-      "Server": {
-        "$path": "src/testing.server.luau"
+      "Demo": {
+        "$path": "src/demo.server.luau"
       }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "$className": "StarterPlayerScripts",
-        "Client": {
-          "$path": "src/testing.client.luau"
+        "Demo": {
+          "$path": "src/demo.client.luau"
         }
       }
     },
