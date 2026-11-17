@@ -39,8 +39,10 @@ module.new = function<T>(
     if replicaContext.type == "client" then
         local path = util.solvePath(self)
 
-        self._clientReplicaConnection = replicaContext.replica:OnSet(path, function(value)
-            self:Set(value)
+        self._clientReplicaConnection = replicaContext.replica:OnSet(path, function(value, _, isDictOp : boolean?)
+            if not isDictOp then
+                self:Set(value)
+            end
         end)
     end
 

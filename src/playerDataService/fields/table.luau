@@ -60,8 +60,8 @@ module.new = function<T, U, V>(
     local self = setmetatable(classContent, module) :: classType<T, U, V>
 
     if replicaContext.type == "client" then
-        self._clientReplicaConnection = replicaContext.replica:OnChange(function(action, onChangedPath, value, key)
-            if action == "Set" or action == "TableInsert" or action == "TableRemove" then
+        self._clientReplicaConnection = replicaContext.replica:OnChange(function(action, onChangedPath, value, key, isDictOp : boolean?)
+            if action == "Set" and isDictOp or action == "TableInsert" or action == "TableRemove" then
                 local path = util.solvePath(self)
             
                 if action == "Set" and #path + 1 == #onChangedPath or #path == #onChangedPath then
@@ -78,7 +78,7 @@ module.new = function<T, U, V>(
                     elseif action == "Set" then
                         key = onChangedPath[#onChangedPath]
 
-                        if value ~= nil then
+                        if value == nil then
                             self:Set(key, value)
                         else
                             self:Delete(key)
@@ -162,7 +162,7 @@ methods.Set = function<T, U, V>(self : classType<T, U, V>, key : T, value : V) :
     if replicaContext.type == "server" then
         table.insert(path, key)
 
-        replicaContext.replica:Set(path, value)
+        replicaContext.replica:Set(path, value, true)
     end
 
     if previousValue ~= nil then
@@ -192,7 +192,7 @@ methods.Delete = function<T, U, V>(self : classType<T, U, V>, key : T) : U?
         if replicaContext.type == "server" then
             table.insert(path, key)
 
-            replicaContext.replica:Set(path, nil)
+            replicaContext.replica:Set(path, nil, true)
         end
 
         self._table[key] = nil
