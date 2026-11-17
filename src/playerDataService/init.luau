@@ -220,6 +220,8 @@ module.init = function<T>(
                         player:Kick(`profile session has ended, please rejoin`)
                     end)
 
+                    profiles[player] = profile
+
                     if player.Parent == Players then
                         local replica = replicaServer.New({
                             Token = playerDataToken :: any,
@@ -246,7 +248,6 @@ module.init = function<T>(
                         data = transformRuntime(profile.Data, util.getReplicaContext(replica))
 
                         playerData[player] = data
-                        profiles[player] = profile
                         replicas[player] = replica
                     else
                         profile:EndSession()
