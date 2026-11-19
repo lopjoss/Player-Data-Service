@@ -6,7 +6,8 @@ local module = {}
 
 export type replicaContext = {
     type : "server",
-    replica : replica.replicaServer
+    replica : replica.replicaServer,
+    player : Player,
 } | {
     type : "client",
     replica : replica.replicaClient,
@@ -18,9 +19,9 @@ export type dataHandler = {
     _clientReplicaConnection : replica.replicaConnection?,
 }
 
-module.getReplicaContext = function(replica : replica.replicaClient | replica.replicaServer) : replicaContext
+module.createReplicaContext = function(replica : replica.replicaClient | replica.replicaServer, player : Player?) : replicaContext
     return if RunService:IsServer()
-        then {type = "server", replica = replica :: replica.replicaServer}
+        then player and {type = "server", replica = replica :: replica.replicaServer, player = player} or error("No player received")
         else {type = "client", replica = replica :: replica.replicaClient}
 end
 

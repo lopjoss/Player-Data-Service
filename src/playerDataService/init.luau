@@ -1,3 +1,4 @@
+local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
@@ -12,6 +13,14 @@ local replica = require("./Replica")
 type stringClassType = string.classType
 type numberClassType = number.classType
 type booleanClassType = boolean.classType
+
+type scheduledOp = {
+    path : {any},
+    method : string,
+    values : {any},
+    executeAt : number,
+    id : string,
+}
 
 type getEntrySignal = <T, U>(
     self : {_table : {[T] : U}}
@@ -144,6 +153,7 @@ module.init = function<T>(
 ) : {
     server : {
         getPlayerDataAsync : (Player) -> transform<T>?,
+        createScheduler : <T>(dataHandler : T, delay : number) -> T,
     },
     client : {
         getPlayerDataAsync : () -> transform<T>,
@@ -159,6 +169,37 @@ module.init = function<T>(
         local playerData : {[Player] : transform<T>} = {}
         local pendingRequests : {[Player] : {thread}} = {}
         local replicas : {[Player] : replica.replicaServer} = {}
+
+        local function createScheduler<T>(dataHandler : T, delay : number) : T
+            local path, replicaContext = util.solvePath(dataHandler)
+
+            if replicaContext.type == "server" then
+                local profile = profiles[replicaContext.player]
+
+                if profile then
+                    return setmetatable({}, {
+                        __index = function(_, methodName : string)
+                            return function(_, ...)
+                                local op : scheduledOp = {
+                                    path = path,
+                                    method = methodName,
+                                    values = table.pack(...),
+                                    executeAt = workspace:GetServerTimeNow() + delay,
+                                    id = HttpService:GenerateGUID(),
+                                }
+                                local store = useMock and playerStore.Mock or playerStore
+
+                                task.spawn(store.MessageAsync, store, profile.Key, op :: any)
+                            end
+                        end,
+                    })
+                else
+                    error("No profile found for player")
+                end
+            else
+                error("ReplicaContext is not set to server")
+            end
+        end
 
         local function getPlayerDataAsync(player : Player) : transform<T>?
             if player.Parent == Players then
@@ -200,6 +241,8 @@ module.init = function<T>(
 
                 if profile ~= nil then
                     local thread : thread?
+
+                    print("Loaded profile:", profile)
 
                     profile:AddUserId(player.UserId)
                     profile:Reconcile()
@@ -245,7 +288,46 @@ module.init = function<T>(
 
                         replica:Subscribe(player)
 
-                        data = transformRuntime(profile.Data, util.getReplicaContext(replica))
+                        data = transformRuntime(profile.Data, util.createReplicaContext(replica, player))
+
+                        local handling : {[string] : boolean} = {}
+
+                        profile:MessageHandler(function(message, processed: () -> ())
+                            local message = message :: scheduledOp
+                            
+                            if not handling[message.id] then
+                                handling[message.id] = true
+
+                                local function process()
+                                    if profile:IsActive() then
+                                        local field : any = data
+
+                                        for _, key in ipairs(message.path) do
+                                            if rawget(field, "_table") then
+                                                local table_ = field :: tableClassType<any, any, any, false>
+
+                                                field = table_:Get(key)
+                                            else
+                                                field = field[key]
+                                            end
+                                        end
+
+                                        handling[message.id] = nil
+                                        field[message.method](field, table.unpack(message.values))
+                                        
+                                        processed()
+                                    end
+                                end
+
+                                local remaining = message.executeAt - workspace:GetServerTimeNow()
+
+                                if remaining <= 0 then
+                                    process()
+                                else
+                                    task.delay(remaining, process)
+                                end
+                            end
+                        end)
 
                         playerData[player] = data
                         replicas[player] = replica
@@ -253,7 +335,7 @@ module.init = function<T>(
                         profile:EndSession()
                     end
                 else
-                    player:Kick(`profile failed to load, please rejoin`)
+                    player:Kick("profile failed to load, please rejoin")
                 end
 
                 clearPendingRequests(player, player.Parent == Players and data or nil)
@@ -279,6 +361,7 @@ module.init = function<T>(
         return {
             server = {
                 getPlayerDataAsync = getPlayerDataAsync,
+                createScheduler = createScheduler,
             },
             client = nil :: any,
         }
@@ -288,23 +371,19 @@ module.init = function<T>(
         replicaClient.RequestData()
 
         local function getPlayerDataAsync() : transform<T>
-            if replicaClient then
-                local thread = coroutine.running()
+            local thread = coroutine.running()
 
-                local conn : replica.replicaConnection
-                conn = replicaClient.OnNew("PlayerData", function(replica)
-                    conn:Disconnect()
+            local conn : replica.replicaConnection
+            conn = replicaClient.OnNew("PlayerData", function(replica)
+                conn:Disconnect()
 
-                    task.spawn(thread, replica)
-                end)
+                task.spawn(thread, replica)
+            end)
 
-                local replica = coroutine.yield<<(), (replica.replicaClient)>>()
-                local playerData = transformRuntime(replica.Data :: T, util.getReplicaContext(replica))
+            local replica = coroutine.yield<<(), (replica.replicaClient)>>()
+            local playerData = transformRuntime(replica.Data :: T, util.createReplicaContext(replica))
 
-                return playerData
-            else
-                error("No client replica class found")
-            end
+            return playerData
         end
 
         return {
