@@ -217,12 +217,13 @@ end
 
 methods.Insert = function<T, U, V>(self : classType<T, U, V>, value : V, position : number?) : U
     local path, replicaContext = util.solvePath(self)
-    local transformed = (self._transform(value, replicaContext, position, self :: {[any] : any}) or value) :: U
     local onAddedSignal : signal.classType<U, T>? = rawget(self :: any, "_onAddedSignal")
     
     position = position and math.floor(position)
     position = position and (if position > #self._table then #self._table + 1
         elseif position <= 0 then 1 else position) or #self._table + 1
+
+    local transformed = (self._transform(value, replicaContext, position :: T, self :: {[any] : any}) or value) :: U
 
     table.insert(self._table, position, transformed)
     
@@ -233,7 +234,7 @@ methods.Insert = function<T, U, V>(self : classType<T, U, V>, value : V, positio
     self:_UpdateKeys()
 
     if onAddedSignal then
-        onAddedSignal:Fire(transformed, (position or #self._table) :: T)
+        onAddedSignal:Fire(transformed, position :: T)
     end
 
     return transformed
