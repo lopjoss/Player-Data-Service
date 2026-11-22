@@ -4,6 +4,10 @@ local replica = require("../Replica")
 
 local module = {}
 
+export type rawDataTable<T, U> = {
+    value : {[T] : U},
+    __PDSID : string,
+}
 export type replicaContext = {
     type : "server",
     replica : replica.replicaServer,
@@ -19,19 +23,34 @@ export type dataHandler = {
     _clientReplicaConnection : replica.replicaConnection?,
 }
 
+module.isTable = function(table : any) : boolean
+    return rawget(table, "_table") and true or false
+end
+
 module.createReplicaContext = function(replica : replica.replicaClient | replica.replicaServer, player : Player?) : replicaContext
     return if RunService:IsServer()
         then player and {type = "server", replica = replica :: replica.replicaServer, player = player} or error("No player received")
         else {type = "client", replica = replica :: replica.replicaClient}
 end
 
-module.solvePath = function(dataHandler : dataHandler) : ({any}, replicaContext)
+module.solvePath = function(dataHandler : dataHandler, useTableIds : boolean?) : ({any}, replicaContext)
     local path = {}
     local parent = dataHandler
 
     while parent do
         if rawget(parent :: any, "_replicaContext") then
-            table.insert(path, 1, parent._key)
+            if module.isTable(parent) then
+                if not useTableIds then
+                    table.insert(path, 1, "value")
+                    table.insert(path, 1, parent._key)
+                else
+                    local rawDataTable : rawDataTable<any, any> = (parent :: any)._rawDataTable
+        
+                    table.insert(path, 1, rawDataTable.__PDSID)
+                end
+            else
+                table.insert(path, 1, parent._key)
+            end
 
             parent = rawget(parent :: any, "_parent")
         else

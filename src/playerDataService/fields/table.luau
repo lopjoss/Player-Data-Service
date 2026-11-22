@@ -2,16 +2,22 @@ local signal = require("../../Signal")
 local util = require("../util")
 local replica = require("../../Replica")
 
-type transform<T, U> = (U, replicaContext : util.replicaContext, key : any, parent : {[any] : any}?) -> T?
+type transform<T, U, V> = (
+    V,
+    replicaContext : util.replicaContext,
+    key : T,
+    parent : classType<T, U, V>?
+) -> (U, util.rawDataTable<T, V>?)
 type classContent<T, U, V> = {
     _table : {[T] : U},
     _onAddedSignal : signal.classType<U, T>?,
     _onRemovedSignal : signal.classType<U, T>?,
-    _transform : transform<U, V>,
+    _transform : transform<T, U, V>,
     _replicaContext : util.replicaContext?,
     _clientReplicaConnection : replica.replicaConnection?,
-    _parent : {[any] : any}?,
+    _parent : any?,
     _key : any,
+    _rawDataTable : util.rawDataTable<T, V>,
 }
 type classMethods<T, U, V> = {
     Get : (self : classType<T, U, V>, key : T) -> U,
@@ -34,7 +40,7 @@ export type classType<T, U, V> = classContent<T, U, V> & classMethods<T, U, V>
 local module = {}
 local methods = {} :: classMethods<unknown, unknown, unknown>
 module.__index = function<T, U, V>(self : classContent<T, U, V>, key : any) : any
-    local method = (methods :: {[any] : any})[key]
+    local method = (methods :: any)[key]
 
     if method ~= nil then
         return method
@@ -45,10 +51,11 @@ end
 
 module.new = function<T, U, V>(
     table : {[T] : U},
-    transform : transform<U, V>,
+    transform : transform<T, U, V>,
     replicaContext : util.replicaContext,
     key : any,
-    parent : {[any] : any}?
+    parent : any?,
+    rawDataTable : util.rawDataTable<T, V>
 ) : classType<T, U, V>
     local classContent : classContent<T, U, V> = {
         _table = table,
@@ -56,6 +63,7 @@ module.new = function<T, U, V>(
         _replicaContext = replicaContext,
         _key = key,
         _parent = parent,
+        _rawDataTable = rawDataTable,
     }
     local self = setmetatable(classContent, module) :: classType<T, U, V>
 
@@ -153,7 +161,7 @@ end
 
 methods.Set = function<T, U, V>(self : classType<T, U, V>, key : T, value : V) : U
     local path, replicaContext = util.solvePath(self)
-    local transformed = (self._transform(value, replicaContext, key, self :: {[any] : any}) or value) :: U
+    local transformed, rawDataTable = self._transform(value, replicaContext, key, self)
     local previousValue = self._table[key]
     local onAddedSignal : signal.classType<U, T>? = rawget(self :: any, "_onAddedSignal")
 
@@ -162,7 +170,7 @@ methods.Set = function<T, U, V>(self : classType<T, U, V>, key : T, value : V) :
     if replicaContext.type == "server" then
         table.insert(path, key)
 
-        replicaContext.replica:Set(path, value, true)
+        replicaContext.replica:Set(path, rawDataTable or value, true)
     end
 
     if previousValue ~= nil then
@@ -222,13 +230,12 @@ methods.Insert = function<T, U, V>(self : classType<T, U, V>, value : V, positio
     position = position and math.floor(position)
     position = position and (if position > #self._table then #self._table + 1
         elseif position <= 0 then 1 else position) or #self._table + 1
-
-    local transformed = (self._transform(value, replicaContext, position :: T, self :: {[any] : any}) or value) :: U
-
+    
+    local transformed, rawDataTable = self._transform(value, replicaContext, position :: T, self)
     table.insert(self._table, position, transformed)
     
     if replicaContext.type == "server" then
-        replicaContext.replica:TableInsert(path, value, position)
+        replicaContext.replica:TableInsert(path, rawDataTable or value, position)
     end
     
     self:_UpdateKeys()

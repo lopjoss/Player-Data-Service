@@ -25,6 +25,7 @@ type scheduledOp = {
 type getEntrySignal = <T, U>(
     self : {_table : {[T] : U}}
 ) -> signal.classType<U, T>
+type rawDataTable<T, U> = util.rawDataTable<T, U>
 type function tableClassType(T : type, U : type, V : type, isArray : boolean) : type
     local result = types.newtable()
 
@@ -33,6 +34,8 @@ type function tableClassType(T : type, U : type, V : type, isArray : boolean) : 
         readresult = U,
         writeresult = U,
     }))
+
+    result:setproperty(types.singleton("_rawDataTable"), rawDataTable(T, V))
 
     local function addMethod(
         name : string,
@@ -112,13 +115,17 @@ end
 
 local module = {}
 
-local function transformRuntime<T>(input : T, replicaContext : util.replicaContext, parent : {[any] : any}?) : transform<T>
+local function transformRuntime<T>(input : T, replicaContext : util.replicaContext, parent : any?) : transform<T>
     assert(type(input) == "table", "expected a table type")
 
-    local input : {[any] : any} = input
-    local result : {[any] : any} = {}
+    local result = {}
 
-    local function getTransformed(value : any, replicaContext : util.replicaContext, key : any, parent : {[any] : any}?) : any?
+    local function getTransformed(
+        value : any,
+        replicaContext : util.replicaContext,
+        key : any,
+        parent : any?
+    ) : (any, util.rawDataTable<any, any>?)
         if type(value) == "number" then
             return number.new(value, replicaContext, key, parent)
         elseif type(value) == "string" then
@@ -126,21 +133,31 @@ local function transformRuntime<T>(input : T, replicaContext : util.replicaConte
         elseif type(value) == "boolean" then
             return boolean.new(value, replicaContext, key, parent)
         elseif type(value) == "table" then
-            local dataHandler = table_.new({}, getTransformed, replicaContext, key, parent)
-            local childDataHandlers = transformRuntime(value, replicaContext, dataHandler :: {[any] : any})
+            local rawDataTable : util.rawDataTable<any, any> = value.__PDSID and value or {
+                value = value,
+                __PDSID = HttpService:GenerateGUID(false)
+            }
+            local dataHandler = table_.new({}, getTransformed, replicaContext, key, parent, rawDataTable)
+            local childDataHandlers = transformRuntime(rawDataTable.value, replicaContext, dataHandler)
 
             for key, childDataHandler in pairs(childDataHandlers) do
                 dataHandler._table[key] = childDataHandler
             end
 
-            return dataHandler
+            return dataHandler, rawDataTable
+        else
+            error(`Unsupported type {type(value)}`)
         end
-
-        return nil
     end
 
     for key, value in pairs(input) do
-        result[key] = getTransformed(value, replicaContext, key, parent) or value
+        local dataHandler, rawDataTable = getTransformed(value, replicaContext, key, parent, input)
+
+        result[key] = dataHandler
+        
+        if rawDataTable then
+            (input :: any)[key] = rawDataTable
+        end
     end
 
     return result :: transform<T>
@@ -153,7 +170,7 @@ module.init = function<T>(
 ) : {
     server : {
         getPlayerDataAsync : (Player) -> transform<T>?,
-        createScheduler : <T>(dataHandler : T, delay : number) -> T,
+        createSchedulerAsync : <T>(dataHandler : T, delay : number) -> T,
     },
     client : {
         getPlayerDataAsync : () -> transform<T>,
@@ -170,8 +187,8 @@ module.init = function<T>(
         local pendingRequests : {[Player] : {thread}} = {}
         local replicas : {[Player] : replica.replicaServer} = {}
 
-        local function createScheduler<T>(dataHandler : T, delay : number) : T
-            local path, replicaContext = util.solvePath(dataHandler)
+        local function createSchedulerAsync<T>(dataHandler : T, delay : number) : T
+            local path, replicaContext = util.solvePath(dataHandler, true)
 
             if replicaContext.type == "server" then
                 local profile = profiles[replicaContext.player]
@@ -188,8 +205,11 @@ module.init = function<T>(
                                     id = HttpService:GenerateGUID(),
                                 }
                                 local store = useMock and playerStore.Mock or playerStore
+                                local success = store:MessageAsync(profile.Key, op :: any)
 
-                                task.spawn(store.MessageAsync, store, profile.Key, op :: any)
+                                if not success then
+                                    error("Failed to store message")
+                                end
                             end
                         end,
                     })
@@ -245,7 +265,7 @@ module.init = function<T>(
                     print("Loaded profile:", profile)
 
                     profile:AddUserId(player.UserId)
-                    profile:Reconcile()
+                    -- profile:Reconcile()
 
                     profile.OnSessionEnd:Connect(function()
                         playerData[player] = nil
@@ -297,25 +317,41 @@ module.init = function<T>(
                             
                             if not handling[message.id] then
                                 handling[message.id] = true
-
+                                
                                 local function process()
                                     if profile:IsActive() then
                                         local field : any = data
 
-                                        for _, key in ipairs(message.path) do
-                                            if rawget(field, "_table") then
-                                                local table_ = field :: tableClassType<any, any, any, false>
+                                        local function findTableDataHandlerFromId(dataHandlers : {tableClassType<any, any, any, false>}, id : string) : any
+                                            local field : any
 
-                                                field = table_:Get(key)
-                                            else
-                                                field = field[key]
+                                            for _, dataHandler in dataHandlers do
+                                                if util.isTable(dataHandler) then
+                                                    if dataHandler._rawDataTable.__PDSID == id then
+                                                        field = dataHandler
+
+                                                        break
+                                                    end
+                                                end
                                             end
+
+                                            return field or error(`Failed to complete scheduled operation: could not find table data handler with id {id}`)
                                         end
 
                                         handling[message.id] = nil
-                                        field[message.method](field, table.unpack(message.values))
-                                        
                                         processed()
+                                        
+                                        for _, key in ipairs(message.path) do
+                                            if util.isTable(field) then
+                                                local table_ = field :: tableClassType<any, any, any, false>
+
+                                                field = table_:Get(key) or findTableDataHandlerFromId(table_._table, key)
+                                            else
+                                                field = field[key] or findTableDataHandlerFromId(field, key)
+                                            end
+                                        end
+
+                                        field[message.method](field, table.unpack(message.values))
                                     end
                                 end
 
@@ -361,7 +397,7 @@ module.init = function<T>(
         return {
             server = {
                 getPlayerDataAsync = getPlayerDataAsync,
-                createScheduler = createScheduler,
+                createSchedulerAsync = createSchedulerAsync,
             },
             client = nil :: any,
         }
