@@ -3,8 +3,13 @@
 registry = "test"
 
 [[package]]
-name = "lm-loleris/profilestore"
-version = "1.0.3"
+name = "lopjoss/player-data-service"
+version = "1.0.0"
+dependencies = [["ProfileStore", "lopjoss/profilestore-type-fix@1.0.0"], ["Replica", "lopjoss/replica-wrapper@1.1.3"], ["Signal", "lopjoss/signal@1.0.0"]]
+
+[[package]]
+name = "lopjoss/profilestore-type-fix"
+version = "1.0.0"
 dependencies = []
 
 [[package]]
@@ -16,8 +21,3 @@ dependencies = []
 name = "lopjoss/signal"
 version = "1.0.0"
 dependencies = []
-
-[[package]]
-name = "lopjoss/player-data-service"
-version = "1.0.0"
-dependencies = [["ProfileStore", "lm-loleris/profilestore@1.0.3"], ["Replica", "lopjoss/replica-wrapper@1.1.3"], ["Signal", "lopjoss/signal@1.0.0"]]

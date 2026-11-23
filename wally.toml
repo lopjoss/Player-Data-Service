@@ -16,6 +16,6 @@ exclude = [
 ]
 
 [server-dependencies]
-ProfileStore = "lm-loleris/profilestore@1.0.3"
+ProfileStore = "lopjoss/profilestore-type-fix@1.0.0"
 Signal = "lopjoss/signal@1.0.0"
 Replica = "lopjoss/replica-wrapper@1.1.3"

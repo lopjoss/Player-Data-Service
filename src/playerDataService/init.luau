@@ -14,12 +14,23 @@ type stringClassType = string.classType
 type numberClassType = number.classType
 type booleanClassType = boolean.classType
 
-type scheduledOp = {
-    path : {any},
+type schedulerOp = {
     method : string,
     values : {any},
-    executeAt : number,
     id : string,
+    schedulerId : string,
+}
+
+type scheduler = {
+    path : {any},
+    creationTime : number,
+    delay : number,
+    ops : {schedulerOp},
+}
+
+type storeDataWrapper<T> = {
+    data : T,
+    schedulers : {[string] : scheduler}
 }
 
 type getEntrySignal = <T, U>(
@@ -170,7 +181,8 @@ module.init = function<T>(
 ) : {
     server : {
         getPlayerDataAsync : (Player) -> transform<T>?,
-        createSchedulerAsync : <T>(dataHandler : T, delay : number) -> T,
+        createScheduler : <T>(dataHandler : T, delay : number) -> (T, string),
+        destroyScheduler : (schedulerId : string, player : Player?) -> ()
     },
     client : {
         getPlayerDataAsync : () -> transform<T>,
@@ -180,41 +192,151 @@ module.init = function<T>(
         local profileStore = require("./ProfileStore")
         local replicaServer = replica.server()
 
+        local wrappedStoreData : storeDataWrapper<T> = {
+            data = dataTemplate,
+            schedulers = {}
+        }
         local playerDataToken = replicaServer.Token("PlayerData")
-        local playerStore = profileStore.New(storeName or "PlayerStore", dataTemplate)
-        local profiles : {[Player] : profileStore.Profile<any>} = {}
+        local playerStore = profileStore.New(storeName or "PlayerStore", wrappedStoreData)
+        local profiles : {[Player] : profileStore.Profile<storeDataWrapper<T>>} = {}
         local playerData : {[Player] : transform<T>} = {}
         local pendingRequests : {[Player] : {thread}} = {}
         local replicas : {[Player] : replica.replicaServer} = {}
 
-        local function createSchedulerAsync<T>(dataHandler : T, delay : number) : T
-            local path, replicaContext = util.solvePath(dataHandler, true)
-
-            if replicaContext.type == "server" then
-                local profile = profiles[replicaContext.player]
-
+        local function destroyScheduler(schedulerId : string, player : Player?)
+            local function destroy(profile : profileStore.Profile<storeDataWrapper<T>>?)
                 if profile then
-                    return setmetatable({}, {
-                        __index = function(_, methodName : string)
-                            return function(_, ...)
-                                local op : scheduledOp = {
-                                    path = path,
-                                    method = methodName,
-                                    values = table.pack(...),
-                                    executeAt = workspace:GetServerTimeNow() + delay,
-                                    id = HttpService:GenerateGUID(),
-                                }
-                                local store = useMock and playerStore.Mock or playerStore
-                                local success = store:MessageAsync(profile.Key, op :: any)
+                    if profile:IsActive() then
+                        profile.Data.schedulers[schedulerId] = nil
+                    else
+                        error("Profile is inactive")
+                    end
+                else
+                    error("No profile found")
+                end
+            end
 
-                                if not success then
-                                    error("Failed to store message")
+            if not player then
+                for _, profile in pairs(profiles) do
+                    if profile.Data.schedulers[schedulerId] then
+                        destroy(profile)
+
+                        return
+                    end
+                end
+
+                error("No profile found")
+            else
+                destroy(profiles[player])
+            end
+        end
+
+        local function processSchedulerOps(player : Player, schedulerId : string)
+            local profile = profiles[player]
+            local data = playerData[player]
+
+            if data and profile and profile:IsActive() then
+                local scheduler = profile.Data.schedulers[schedulerId]
+
+                if scheduler then
+                    local field : any = data
+    
+                    local function findTableDataHandlerFromId(dataHandlers : {tableClassType<any, any, any, false>}, id : string) : any
+                        local field : any
+    
+                        for _, dataHandler in dataHandlers do
+                            if util.isTable(dataHandler) then
+                                if dataHandler._rawDataTable.__PDSID == id then
+                                    field = dataHandler
+    
+                                    break
                                 end
                             end
-                        end,
-                    })
+                        end
+    
+                        if field then
+                            return field
+                        else
+                            destroyScheduler(schedulerId, player)
+    
+                            error(`Failed to complete scheduled operations: could not find table data handler with id {id}`)
+                        end
+                    end
+                    
+                    for _, key in ipairs(scheduler.path) do
+                        if util.isTable(field) then
+                            local table_ = field :: tableClassType<any, any, any, false>
+    
+                            field = table_:Get(key) or findTableDataHandlerFromId(table_._table, key)
+                        else
+                            field = field[key] or findTableDataHandlerFromId(field, key)
+                        end
+                    end
+    
+                    while #scheduler.ops > 0 do
+                        local op = scheduler.ops[1]
+
+                        field[op.method](field, table.unpack(op.values))
+
+                        table.remove(scheduler.ops, 1)
+                    end
+    
+                    destroyScheduler(schedulerId, player)
+                end
+            end
+        end
+
+        local function createScheduler<T>(dataHandler : T, delay : number) : (T, string)
+            local path, replicaContext = util.solvePath(dataHandler, true)
+            
+            if replicaContext.type == "server" then
+                local profile = profiles[replicaContext.player]
+                
+                if profile then
+                    if profile:IsActive() then
+                        local schedulerId = HttpService:GenerateGUID(false)
+                        local scheduler : scheduler = {
+                            path = path,
+                            creationTime = workspace:GetServerTimeNow(),
+                            delay = delay,
+                            ops = {},
+                        }
+
+                        profile.Data.schedulers[schedulerId] = scheduler
+
+                        task.delay(delay, function()
+                            processSchedulerOps(replicaContext.player, schedulerId)
+                        end)
+
+                        return setmetatable({}, {
+                            __index = function(_, methodName : string)
+                                return function(_, ...)
+                                    if profile:IsActive() then
+                                        local scheduler = profile.Data.schedulers[schedulerId]
+
+                                        if scheduler then
+                                            local op : schedulerOp = {
+                                                method = methodName,
+                                                values = table.pack(...),
+                                                id = HttpService:GenerateGUID(),
+                                                schedulerId = schedulerId,
+                                            }
+
+                                            table.insert(scheduler.ops, op)
+                                        else
+                                            error("Scheduler has been destroyed")
+                                        end
+                                    else
+                                        error("Profile is inactive")
+                                    end
+                                end
+                            end,
+                        }) :: T, schedulerId
+                    else
+                        error("Profile is inactive")
+                    end
                 else
-                    error("No profile found for player")
+                    error("No profile found")
                 end
             else
                 error("ReplicaContext is not set to server")
@@ -229,6 +351,7 @@ module.init = function<T>(
                     return playerData
                 else
                     pendingRequests[player] = pendingRequests[player] or {}
+
                     table.insert(pendingRequests[player], coroutine.running())
 
                     return coroutine.yield<<(), (transform<T>?)>>()
@@ -286,9 +409,11 @@ module.init = function<T>(
                     profiles[player] = profile
 
                     if player.Parent == Players then
+                        profile.Data.schedulers = profile.Data.schedulers or {}
+
                         local replica = replicaServer.New({
                             Token = playerDataToken :: any,
-                            Data = profile.Data,
+                            Data = profile.Data.data,
                         })
 
                         if not replicaServer.ReadyPlayers[player] then
@@ -308,65 +433,18 @@ module.init = function<T>(
 
                         replica:Subscribe(player)
 
-                        data = transformRuntime(profile.Data, util.createReplicaContext(replica, player))
-
-                        local handling : {[string] : boolean} = {}
-
-                        profile:MessageHandler(function(message, processed: () -> ())
-                            local message = message :: scheduledOp
-                            
-                            if not handling[message.id] then
-                                handling[message.id] = true
-                                
-                                local function process()
-                                    if profile:IsActive() then
-                                        local field : any = data
-
-                                        local function findTableDataHandlerFromId(dataHandlers : {tableClassType<any, any, any, false>}, id : string) : any
-                                            local field : any
-
-                                            for _, dataHandler in dataHandlers do
-                                                if util.isTable(dataHandler) then
-                                                    if dataHandler._rawDataTable.__PDSID == id then
-                                                        field = dataHandler
-
-                                                        break
-                                                    end
-                                                end
-                                            end
-
-                                            return field or error(`Failed to complete scheduled operation: could not find table data handler with id {id}`)
-                                        end
-
-                                        handling[message.id] = nil
-                                        processed()
-                                        
-                                        for _, key in ipairs(message.path) do
-                                            if util.isTable(field) then
-                                                local table_ = field :: tableClassType<any, any, any, false>
-
-                                                field = table_:Get(key) or findTableDataHandlerFromId(table_._table, key)
-                                            else
-                                                field = field[key] or findTableDataHandlerFromId(field, key)
-                                            end
-                                        end
-
-                                        field[message.method](field, table.unpack(message.values))
-                                    end
-                                end
-
-                                local remaining = message.executeAt - workspace:GetServerTimeNow()
-
-                                if remaining <= 0 then
-                                    process()
-                                else
-                                    task.delay(remaining, process)
-                                end
-                            end
-                        end)
+                        data = transformRuntime(profile.Data.data, util.createReplicaContext(replica, player))
 
                         playerData[player] = data
                         replicas[player] = replica
+
+                        for schedulerId, scheduler in pairs(profile.Data.schedulers) do
+                            local delay = scheduler.creationTime + scheduler.delay - workspace:GetServerTimeNow()
+
+                            task.delay(delay, function()
+                                processSchedulerOps(player, schedulerId)
+                            end)
+                        end
                     else
                         profile:EndSession()
                     end
@@ -397,7 +475,8 @@ module.init = function<T>(
         return {
             server = {
                 getPlayerDataAsync = getPlayerDataAsync,
-                createSchedulerAsync = createSchedulerAsync,
+                createScheduler = createScheduler,
+                destroyScheduler = destroyScheduler,
             },
             client = nil :: any,
         }
