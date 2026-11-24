@@ -7,9 +7,10 @@ type classContent<T> = {
     value : T,
     _onChangedSignal : signal.classType<T, T>?,
     _replicaContext : util.replicaContext?,
-    _clientReplicaConnection : replica.replicaConnection?,
+    _replicaConnection : replica.replicaConnection?,
     _parent : {[any] : any}?,
     _key : any,
+    _onPathChanged : (() -> ())?,
 }
 type classMethods<T> = {
     Set : (self : classType<T>, value : T) -> (),
@@ -37,13 +38,23 @@ module.new = function<T>(
     local self = setmetatable(classContent, module) :: classType<T>
 
     if replicaContext.type == "client" then
-        local path = util.solvePath(self)
-
-        self._clientReplicaConnection = replicaContext.replica:OnSet(path, function(value, _, isDictOp : boolean?)
-            if not isDictOp then
-                self:Set(value)
+        local function onPathChanged()
+            if self._replicaConnection then
+                self._replicaConnection:Disconnect()
             end
-        end)
+
+            local path = util.solvePath(self)
+    
+            self._replicaConnection = replicaContext.replica:OnSet(path, function(value, _, isDictOp : boolean?)
+                if not isDictOp then
+                    self:Set(value)
+                end
+            end)
+        end
+
+        onPathChanged()
+
+        self._onPathChanged = onPathChanged
     end
 
     return self

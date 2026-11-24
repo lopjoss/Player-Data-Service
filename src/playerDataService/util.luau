@@ -20,7 +20,8 @@ export type dataHandler = {
     _parent : dataHandler?,
     _key : any,
     _replicaContext : replicaContext?,
-    _clientReplicaConnection : replica.replicaConnection?,
+    _replicaConnection : replica.replicaConnection?,
+    _onPathChanged : (() -> ())?,
 }
 
 module.isTable = function(table : any) : boolean

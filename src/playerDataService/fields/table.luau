@@ -14,10 +14,11 @@ type classContent<T, U, V> = {
     _onRemovedSignal : signal.classType<U, T>?,
     _transform : transform<T, U, V>,
     _replicaContext : util.replicaContext?,
-    _clientReplicaConnection : replica.replicaConnection?,
+    _replicaConnection : replica.replicaConnection?,
     _parent : any?,
     _key : any,
     _rawDataTable : util.rawDataTable<T, V>,
+    _onPathChanged : (() -> ())?,
 }
 type classMethods<T, U, V> = {
     Get : (self : classType<T, U, V>, key : T) -> U,
@@ -68,33 +69,45 @@ module.new = function<T, U, V>(
     local self = setmetatable(classContent, module) :: classType<T, U, V>
 
     if replicaContext.type == "client" then
-        self._clientReplicaConnection = replicaContext.replica:OnChange(function(action, onChangedPath, value, key, isDictOp : boolean?)
-            if action == "Set" and isDictOp or action == "TableInsert" or action == "TableRemove" then
-                local path = util.solvePath(self)
+        local function onPathChanged()
+            local replicaConnection : index<classContent<T, U, V>, "_replicaConnection"> = rawget(self :: any, "_replicaConnection")
             
-                if action == "Set" and #path + 1 == #onChangedPath or #path == #onChangedPath then
-                    for i, key in ipairs(path) do
-                        if key ~= onChangedPath[i] then
-                            return
+            if replicaConnection then
+                replicaConnection:Disconnect()
+            end
+
+            self._replicaConnection = replicaContext.replica:OnChange(function(action, onChangedPath, value, key, isDictOp : boolean?)
+                if action == "Set" and isDictOp or action == "TableInsert" or action == "TableRemove" then
+                    local path = util.solvePath(self)
+                
+                    if action == "Set" and #path + 1 == #onChangedPath or #path == #onChangedPath then
+                        for i, key in ipairs(path) do
+                            if key ~= onChangedPath[i] then
+                                return
+                            end
                         end
-                    end
 
-                    if action == "TableInsert" then
-                        self:Insert(value, key)
-                    elseif action == "TableRemove" then
-                        self:Remove(key)
-                    elseif action == "Set" then
-                        key = onChangedPath[#onChangedPath]
+                        if action == "TableInsert" then
+                            self:Insert(value, key)
+                        elseif action == "TableRemove" then
+                            self:Remove(key)
+                        elseif action == "Set" then
+                            key = onChangedPath[#onChangedPath]
 
-                        if value ~= nil then
-                            self:Set(key, value)
-                        else
-                            self:Delete(key)
+                            if value ~= nil then
+                                self:Set(key, value)
+                            else
+                                self:Delete(key)
+                            end
                         end
                     end
                 end
-            end
-        end)
+            end)
+        end
+
+        onPathChanged()
+
+        self._onPathChanged = onPathChanged
     end
 
     return self
@@ -146,11 +159,12 @@ end
 -- dictionary methods
 
 local function destroyDataHandler(dataHandler : util.dataHandler)
-    local connection = rawget(dataHandler :: any, "_clientReplicaConnection") :: replica.replicaConnection?
+    local connection : replica.replicaConnection? = rawget(dataHandler :: any, "_replicaConnection")
+    local replicaContext : util.replicaContext? = rawget(dataHandler :: any, "_replicaContext")
     
     if 
-        dataHandler._replicaContext
-        and dataHandler._replicaContext.type == "client"
+        replicaContext
+        and replicaContext.type == "client"
         and connection
     then
         connection:Disconnect()
@@ -218,8 +232,27 @@ end
 -- array methods
 
 methods._UpdateKeys = function<T, U, V>(self : classType<T, U, V>)
-    for key, dataHandler in ipairs(self._table) do
-        rawset(dataHandler, "_key", key)
+    local function updatePath(dataHandler : util.dataHandler)
+        local replicaContext : util.replicaContext? = rawget(dataHandler :: any, "_replicaContext")
+        local onPathChanged : index<classContent<T, U, V>, "_onPathChanged"> = rawget(dataHandler :: any, "_onPathChanged")
+
+        if replicaContext and replicaContext.type == "client" then
+            if onPathChanged then
+                onPathChanged()
+            end
+
+            if util.isTable(dataHandler) then
+                for key, dataHandler : util.dataHandler in pairs((dataHandler :: classType<any, any, any>)._table) do
+                    updatePath(dataHandler)
+                end
+            end
+        end
+    end
+
+    for key, dataHandler : util.dataHandler in ipairs(self._table) do
+        rawset(dataHandler :: any, "_key", key)
+
+        updatePath(dataHandler)
     end
 end
 
