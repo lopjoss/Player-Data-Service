@@ -30,7 +30,7 @@ type scheduler = {
 
 type storeDataWrapper<T> = {
     data : T,
-    schedulers : {[string] : scheduler}
+    schedulers : {[string] : scheduler},
 }
 
 type getEntrySignal = <T, U>(
@@ -174,10 +174,33 @@ local function transformRuntime<T>(input : T, replicaContext : util.replicaConte
     return result :: transform<T>
 end
 
+local function reconcile<T>(data : T & {any}, reference : any, skipIndices : {any}?, dontWrapTables : boolean?) : T
+    for key, value in pairs(reference) do
+        if not skipIndices or not table.find(skipIndices, key) then
+            if type(value) ~= "table" then
+                if data[key] == nil then
+                    data[key] = value
+                end
+            else
+                local rawDataTable : util.rawDataTable<any, any>? = not dontWrapTables and (data[key] and data[key].__PDSID and data[key] or {
+                    value = data[key] or {},
+                    __PDSID = HttpService:GenerateGUID(false)
+                }) or nil
+                local reconciled = reconcile(rawDataTable and rawDataTable.value or data[key] or {}, value, nil, dontWrapTables)
+
+                data[key] = rawDataTable or reconciled
+            end
+        end
+    end
+
+    return data
+end
+
 module.init = function<T>(
     dataTemplate : T,
     storeName : string?,
-    useMock : boolean?
+    useMock : boolean?,
+    dontReconcile : boolean?
 ) : {
     server : {
         getPlayerDataAsync : (Player) -> transform<T>?,
@@ -388,7 +411,11 @@ module.init = function<T>(
                     print("Loaded profile:", profile)
 
                     profile:AddUserId(player.UserId)
-                    -- profile:Reconcile()
+                    
+                    if not dontReconcile then
+                        reconcile(profile.Data :: any, wrappedStoreData, {"data"}, true)
+                        reconcile(profile.Data.data, wrappedStoreData.data)
+                    end
 
                     profile.OnSessionEnd:Connect(function()
                         playerData[player] = nil
@@ -409,8 +436,6 @@ module.init = function<T>(
                     profiles[player] = profile
 
                     if player.Parent == Players then
-                        profile.Data.schedulers = profile.Data.schedulers or {}
-
                         local replica = replicaServer.New({
                             Token = playerDataToken :: any,
                             Data = profile.Data.data,
