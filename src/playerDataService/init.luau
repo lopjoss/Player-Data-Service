@@ -422,7 +422,7 @@ module.init = function<T>(
                         profiles[player] = nil
 
                         if thread then
-                            task.cancel(thread)
+                            task.spawn(thread)
                         end
 
                         if replicas[player] then
@@ -436,11 +436,6 @@ module.init = function<T>(
                     profiles[player] = profile
 
                     if player.Parent == Players then
-                        local replica = replicaServer.New({
-                            Token = playerDataToken :: any,
-                            Data = profile.Data.data,
-                        })
-
                         if not replicaServer.ReadyPlayers[player] then
                             thread = coroutine.running()
 
@@ -454,21 +449,32 @@ module.init = function<T>(
                             end)
 
                             coroutine.yield()
+
+                            conn:Disconnect()
+
+                            thread = nil
                         end
 
-                        replica:Subscribe(player)
+                        if replicaServer.ReadyPlayers[player] then
+                            local replica = replicaServer.New({
+                                Token = playerDataToken :: any,
+                                Data = profile.Data.data,
+                            })
 
-                        data = transformRuntime(profile.Data.data, util.createReplicaContext(replica, player))
-
-                        playerData[player] = data
-                        replicas[player] = replica
-
-                        for schedulerId, scheduler in pairs(profile.Data.schedulers) do
-                            local delay = scheduler.creationTime + scheduler.delay - workspace:GetServerTimeNow()
-
-                            task.delay(delay, function()
-                                processSchedulerOps(player, schedulerId)
-                            end)
+                            replica:Subscribe(player)
+    
+                            data = transformRuntime(profile.Data.data, util.createReplicaContext(replica, player))
+    
+                            playerData[player] = data
+                            replicas[player] = replica
+    
+                            for schedulerId, scheduler in pairs(profile.Data.schedulers) do
+                                local delay = scheduler.creationTime + scheduler.delay - workspace:GetServerTimeNow()
+    
+                                task.delay(delay, function()
+                                    processSchedulerOps(player, schedulerId)
+                                end)
+                            end
                         end
                     else
                         profile:EndSession()
@@ -477,7 +483,7 @@ module.init = function<T>(
                     player:Kick("profile failed to load, please rejoin")
                 end
 
-                clearPendingRequests(player, player.Parent == Players and data or nil)
+                clearPendingRequests(player, data)
             end
         end
 
