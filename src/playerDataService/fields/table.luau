@@ -169,6 +169,12 @@ local function destroyDataHandler(dataHandler : util.dataHandler)
     then
         connection:Disconnect()
     end
+
+    if util.isTable(dataHandler) then
+        for key, dataHandler : util.dataHandler in pairs((dataHandler :: classType<any, any, any>)._table) do
+            destroyDataHandler(dataHandler)
+        end
+    end
     
     rawset(dataHandler :: any, "_replicaContext", nil)
 end
