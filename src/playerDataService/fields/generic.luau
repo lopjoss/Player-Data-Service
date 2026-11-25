@@ -11,6 +11,7 @@ type classContent<T> = {
     _parent : {[any] : any}?,
     _key : any,
     _onPathChanged : (() -> ())?,
+    _rawDataWrapper : util.rawDataWrapper<T>,
 }
 type classMethods<T> = {
     Set : (self : classType<T>, value : T) -> (),
@@ -26,7 +27,8 @@ module.new = function<T>(
     value : T,
     replicaContext : util.replicaContext,
     key : any,
-    parent : {[any] : any}?
+    parent : {[any] : any}?,
+    rawDataWrapper : util.rawDataWrapper<T>
 ) : classType<T>
     local classContent : classContent<T> = {
         value = value,
@@ -34,6 +36,7 @@ module.new = function<T>(
         _replicaContext = replicaContext,
         _key = key,
         _parent = parent,
+        _rawDataWrapper = rawDataWrapper,
     }
     local self = setmetatable(classContent, module) :: classType<T>
 

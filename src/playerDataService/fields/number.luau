@@ -16,9 +16,10 @@ module.new = function(
     value : number,
     replicaContext : util.replicaContext,
     key : any,
-    parent : {[any] : any}?
+    parent : {[any] : any}?,
+    rawDataWrapper : util.rawDataWrapper<number>
 ) : classType
-    local self = generic.new<<number>>(value, replicaContext, key, parent)
+    local self = generic.new<<number>>(value, replicaContext, key, parent, rawDataWrapper)
 
     return setmetatable(self, module) :: any
 end

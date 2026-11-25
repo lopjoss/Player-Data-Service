@@ -7,7 +7,7 @@ type transform<T, U, V> = (
     replicaContext : util.replicaContext,
     key : T,
     parent : classType<T, U, V>?
-) -> (U, util.rawDataTable<T, V>?)
+) -> (U, util.rawDataWrapper<{[T] : V}>)
 type classContent<T, U, V> = {
     _table : {[T] : U},
     _onAddedSignal : signal.classType<U, T>?,
@@ -17,7 +17,7 @@ type classContent<T, U, V> = {
     _replicaConnection : replica.replicaConnection?,
     _parent : any?,
     _key : any,
-    _rawDataTable : util.rawDataTable<T, V>,
+    _rawDataWrapper : util.rawDataWrapper<{[T] : V}>,
     _onPathChanged : (() -> ())?,
 }
 type classMethods<T, U, V> = {
@@ -56,7 +56,7 @@ module.new = function<T, U, V>(
     replicaContext : util.replicaContext,
     key : any,
     parent : any?,
-    rawDataTable : util.rawDataTable<T, V>
+    rawDataWrapper : util.rawDataWrapper<{[T] : V}>
 ) : classType<T, U, V>
     local classContent : classContent<T, U, V> = {
         _table = table,
@@ -64,7 +64,7 @@ module.new = function<T, U, V>(
         _replicaContext = replicaContext,
         _key = key,
         _parent = parent,
-        _rawDataTable = rawDataTable,
+        _rawDataWrapper = rawDataWrapper,
     }
     local self = setmetatable(classContent, module) :: classType<T, U, V>
 
@@ -181,7 +181,7 @@ end
 
 methods.Set = function<T, U, V>(self : classType<T, U, V>, key : T, value : V) : U
     local path, replicaContext = util.solvePath(self)
-    local transformed, rawDataTable = self._transform(value, replicaContext, key, self)
+    local transformed, rawDataWrapper = self._transform(value, replicaContext, key, self)
     local previousValue = self._table[key]
     local onAddedSignal : signal.classType<U, T>? = rawget(self :: any, "_onAddedSignal")
 
@@ -190,7 +190,7 @@ methods.Set = function<T, U, V>(self : classType<T, U, V>, key : T, value : V) :
     if replicaContext.type == "server" then
         table.insert(path, key)
 
-        replicaContext.replica:Set(path, rawDataTable or value, true)
+        replicaContext.replica:Set(path, rawDataWrapper, true)
     end
 
     if previousValue ~= nil then
@@ -270,11 +270,11 @@ methods.Insert = function<T, U, V>(self : classType<T, U, V>, value : V, positio
     position = position and (if position > #self._table then #self._table + 1
         elseif position <= 0 then 1 else position) or #self._table + 1
     
-    local transformed, rawDataTable = self._transform(value, replicaContext, position :: T, self)
+    local transformed, rawDataWrapper = self._transform(value, replicaContext, position :: T, self)
     table.insert(self._table, position, transformed)
     
     if replicaContext.type == "server" then
-        replicaContext.replica:TableInsert(path, rawDataTable or value, position)
+        replicaContext.replica:TableInsert(path, rawDataWrapper, position)
     end
     
     self:_UpdateKeys()

@@ -36,7 +36,7 @@ type storeDataWrapper<T> = {
 type getEntrySignal = <T, U>(
     self : {_table : {[T] : U}}
 ) -> signal.classType<U, T>
-type rawDataTable<T, U> = util.rawDataTable<T, U>
+type rawDataWrapper<T> = util.rawDataWrapper<T>
 type function tableClassType(T : type, U : type, V : type, isArray : boolean) : type
     local result = types.newtable()
 
@@ -46,7 +46,9 @@ type function tableClassType(T : type, U : type, V : type, isArray : boolean) : 
         writeresult = U,
     }))
 
-    result:setproperty(types.singleton("_rawDataTable"), rawDataTable(T, V))
+    result:setproperty(types.singleton("_rawDataWrapper"), rawDataWrapper(
+        types.newtable(nil, {index = T, readresult = V, writeresult = V}
+    )))
 
     local function addMethod(
         name : string,
@@ -136,59 +138,56 @@ local function transformRuntime<T>(input : T, replicaContext : util.replicaConte
         replicaContext : util.replicaContext,
         key : any,
         parent : any?
-    ) : (any, util.rawDataTable<any, any>?)
-        if type(value) == "number" then
-            return number.new(value, replicaContext, key, parent)
-        elseif type(value) == "string" then
-            return string.new(value, replicaContext, key, parent)
-        elseif type(value) == "boolean" then
-            return boolean.new(value, replicaContext, key, parent)
-        elseif type(value) == "table" then
-            local rawDataTable : util.rawDataTable<any, any> = value.__PDSID and value or {
-                value = value,
-                __PDSID = HttpService:GenerateGUID(false)
-            }
-            local dataHandler = table_.new({}, getTransformed, replicaContext, key, parent, rawDataTable)
-            local childDataHandlers = transformRuntime(rawDataTable.value, replicaContext, dataHandler)
+    ) : (any, util.rawDataWrapper<any>)
+        local rawDataWrapper : util.rawDataWrapper<any> = type(value) == "table" and value.__PDSID and value or {
+            value = value,
+            __PDSID = HttpService:GenerateGUID(false)
+        }
+
+        if type(rawDataWrapper.value) == "number" then
+            return number.new(rawDataWrapper.value, replicaContext, key, parent, rawDataWrapper), rawDataWrapper
+        elseif type(rawDataWrapper.value) == "string" then
+            return string.new(rawDataWrapper.value, replicaContext, key, parent, rawDataWrapper), rawDataWrapper
+        elseif type(rawDataWrapper.value) == "boolean" then
+            return boolean.new(rawDataWrapper.value, replicaContext, key, parent, rawDataWrapper), rawDataWrapper
+        elseif type(rawDataWrapper.value) == "table" then
+            local dataHandler = table_.new({}, getTransformed, replicaContext, key, parent, rawDataWrapper)
+            local childDataHandlers = transformRuntime(rawDataWrapper.value :: {[any] : any}, replicaContext, dataHandler)
 
             for key, childDataHandler in pairs(childDataHandlers) do
                 dataHandler._table[key] = childDataHandler
             end
 
-            return dataHandler, rawDataTable
+            return dataHandler, rawDataWrapper
         else
-            error(`Unsupported type {type(value)}`)
+            error(`Unsupported type {type(rawDataWrapper.value)}`)
         end
     end
 
     for key, value in pairs(input) do
-        local dataHandler, rawDataTable = getTransformed(value, replicaContext, key, parent, input)
+        local dataHandler, rawDataWrapper = getTransformed(value, replicaContext, key, parent, input)
 
         result[key] = dataHandler
-        
-        if rawDataTable then
-            (input :: any)[key] = rawDataTable
-        end
+        ;(input :: any)[key] = rawDataWrapper
     end
 
     return result :: transform<T>
 end
 
-local function reconcile<T>(data : T & {any}, reference : any, skipIndices : {any}?, dontWrapTables : boolean?) : T
+local function reconcile<T>(data : T & {any}, reference : any, skipIndices : {any}?, dontWrap : boolean?) : T
     for key, value in pairs(reference) do
         if not skipIndices or not table.find(skipIndices, key) then
-            if type(value) ~= "table" then
-                if data[key] == nil then
-                    data[key] = value
-                end
-            else
-                local rawDataTable : util.rawDataTable<any, any>? = not dontWrapTables and (data[key] and data[key].__PDSID and data[key] or {
-                    value = data[key] or {},
-                    __PDSID = HttpService:GenerateGUID(false)
-                }) or nil
-                local reconciled = reconcile(rawDataTable and rawDataTable.value or data[key] or {}, value, nil, dontWrapTables)
+            local rawDataWrapper : util.rawDataWrapper<any>? = not dontWrap and (data[key] and type(data[key]) == "table" and data[key].__PDSID and data[key] or {
+                value = if data[key] ~= nil then data[key] elseif typeof(value) ~= "table" then value else {},
+                __PDSID = HttpService:GenerateGUID(false)
+            }) or nil
+            
+            if type(value) == "table" then
+                local reconciled = reconcile(rawDataWrapper and rawDataWrapper.value or data[key] or {}, value, nil, dontWrap)
 
-                data[key] = rawDataTable or reconciled
+                data[key] = rawDataWrapper or reconciled
+            else
+                data[key] = rawDataWrapper or if data[key] ~= nil then data[key] else value
             end
         end
     end
@@ -264,16 +263,14 @@ module.init = function<T>(
                 if scheduler then
                     local field : any = data
     
-                    local function findTableDataHandlerFromId(dataHandlers : {tableClassType<any, any, any, false>}, id : string) : any
-                        local field : any
+                    local function findTableDataHandlerFromId(dataHandlers : {[any] : util.dataHandler}, id : string) : util.dataHandler
+                        local field : util.dataHandler
     
-                        for _, dataHandler in dataHandlers do
-                            if util.isTable(dataHandler) then
-                                if dataHandler._rawDataTable.__PDSID == id then
-                                    field = dataHandler
-    
-                                    break
-                                end
+                        for _, dataHandler in pairs(dataHandlers) do
+                            if dataHandler._rawDataWrapper.__PDSID == id then
+                                field = dataHandler
+
+                                break
                             end
                         end
     

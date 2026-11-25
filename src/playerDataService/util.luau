@@ -4,8 +4,8 @@ local replica = require("../Replica")
 
 local module = {}
 
-export type rawDataTable<T, U> = {
-    value : {[T] : U},
+export type rawDataWrapper<T> = {
+    value : T,
     __PDSID : string,
 }
 export type replicaContext = {
@@ -19,6 +19,7 @@ export type replicaContext = {
 export type dataHandler = {
     _parent : dataHandler?,
     _key : any,
+    _rawDataWrapper : rawDataWrapper<any>,
     _replicaContext : replicaContext?,
     _replicaConnection : replica.replicaConnection?,
     _onPathChanged : (() -> ())?,
@@ -40,17 +41,13 @@ module.solvePath = function(dataHandler : dataHandler, useTableIds : boolean?) :
 
     while parent do
         if rawget(parent :: any, "_replicaContext") then
-            if module.isTable(parent) then
-                if not useTableIds then
-                    table.insert(path, 1, "value")
-                    table.insert(path, 1, parent._key)
-                else
-                    local rawDataTable : rawDataTable<any, any> = (parent :: any)._rawDataTable
-        
-                    table.insert(path, 1, rawDataTable.__PDSID)
-                end
-            else
+            if not useTableIds then
+                table.insert(path, 1, "value")
                 table.insert(path, 1, parent._key)
+            else
+                local rawDataWrapper : rawDataWrapper<any> = (parent :: any)._rawDataWrapper
+    
+                table.insert(path, 1, rawDataWrapper.__PDSID)
             end
 
             parent = rawget(parent :: any, "_parent")
