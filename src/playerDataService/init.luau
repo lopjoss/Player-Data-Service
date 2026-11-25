@@ -140,7 +140,7 @@ local function transformRuntime<T>(input : T, replicaContext : util.replicaConte
         parent : any?
     ) : (any, util.rawDataWrapper<any>)
         local rawDataWrapper : util.rawDataWrapper<any> = type(value) == "table" and value.__PDSID and value or {
-            value = value,
+            value = type(value) == "table" and table.clone(value) or value,
             __PDSID = HttpService:GenerateGUID(false)
         }
 
