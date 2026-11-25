@@ -510,23 +510,27 @@ module.init = function<T>(
         }
     else
         local replicaClient = replica.client()
+        local playerData : transform<T>?
+        local threads : {thread} = {}
 
         replicaClient.RequestData()
 
+        replicaClient.OnNew("PlayerData", function(replica)
+            playerData = transformRuntime(replica.Data :: T, util.createReplicaContext(replica))
+
+            for _, v in ipairs(threads) do
+                coroutine.resume(v, playerData)
+            end
+        end)
+
         local function getPlayerDataAsync() : transform<T>
-            local thread = coroutine.running()
+            if playerData then
+                return playerData
+            else
+                table.insert(threads, coroutine.running())
 
-            local conn : replica.replicaConnection
-            conn = replicaClient.OnNew("PlayerData", function(replica)
-                conn:Disconnect()
-
-                task.spawn(thread, replica)
-            end)
-
-            local replica = coroutine.yield<<(), (replica.replicaClient)>>()
-            local playerData = transformRuntime(replica.Data :: T, util.createReplicaContext(replica))
-
-            return playerData
+                return coroutine.yield<<(), (transform<T>)>>()
+            end
         end
 
         return {
